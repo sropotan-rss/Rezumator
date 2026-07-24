@@ -23,15 +23,16 @@ if not openai.api_key:
 # ------------------------------------------------------------
 # Функции для извлечения текста из файлов
 def extract_text_from_pdf(file_bytes):
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+    import pdfplumber
 
-def extract_text_from_docx(file_bytes):
-    doc = docx.Document(BytesIO(file_bytes))
-    return "\n".join([p.text for p in doc.paragraphs])
+def extract_text_from_pdf(file_bytes):
+    with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+        text = ""
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        return text
 
 # ------------------------------------------------------------
 # AI-функции
