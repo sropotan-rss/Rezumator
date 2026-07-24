@@ -13,18 +13,17 @@ import textwrap
 import datetime
 import time
 
-# ---------- Конфигурация ----------
 st.set_page_config(page_title="RSS job", layout="wide")
 
+# ---------- Ключи ----------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
 if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-# Подключение к Supabase (если есть)
+# ---------- Подключение Supabase (опционально) ----------
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
     from supabase import create_client
@@ -66,16 +65,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Сессия пользователя (изоляция по URL) ----------
+# ---------- Сессия пользователя (уникальный URL) ----------
 query_params = st.experimental_get_query_params()
 session_id = query_params.get("session", [None])[0]
 if not session_id:
-    # Генерируем новый ID и перезагружаем с ним
     new_id = str(uuid.uuid4())
     st.experimental_set_query_params(session=new_id)
     st.rerun()
 
-# Данные пользователя храним под этим ID
+# Данные пользователя под этим ID
 if session_id not in st.session_state:
     st.session_state[session_id] = {
         "rules": [],
@@ -86,27 +84,28 @@ if session_id not in st.session_state:
 user_data = st.session_state[session_id]
 
 # ---------- Счётчик уникальных IP ----------
-def get_client_ip():
-    """Пытаемся получить IP посетителя."""
-    try:
-        # Используем бесплатный сервис
-        r = requests.get("https://api.ipify.org?format=json", timeout=5)
-        return r.json()["ip"]
-    except Exception:
-        return "unknown"
+@st.cache_resource
+def get_visitor_set():
+    return set()
 
-if "visitors" not in st.session_state:
-    st.session_state.visitors = set()
+def add_visitor(ip):
+    visitors = get_visitor_set()
+    visitors.add(ip)
+    # Если Supabase доступен, сохраняем IP в БД
+    if supabase:
+        try:
+            supabase.table("visitors").insert({"ip_address": ip, "visited_at": "now()"}).execute()
+        except Exception:
+            pass
 
-client_ip = get_client_ip()
-st.session_state.visitors.add(client_ip)
-
-# Сохраняем в Supabase (если доступен)
-if supabase:
-    try:
-        supabase.table("visitors").insert({"ip_address": client_ip, "visited_at": "now()"}).execute()
-    except Exception:
-        pass
+client_ip = "неизвестно"
+try:
+    r = requests.get("https://api.ipify.org?format=json", timeout=5)
+    client_ip = r.json()["ip"]
+except Exception:
+    pass
+add_visitor(client_ip)
+total_ips = len(get_visitor_set())  # уникальные IP за время жизни контейнера
 
 # ---------- ИИ (Groq) ----------
 def ask_ai(prompt, max_tokens=2500, retries=3):
@@ -195,20 +194,10 @@ def ai_market():
 # ---------- Интерфейс ----------
 with st.sidebar:
     st.markdown("## 🚀 RSS job")
-    st.markdown(f"🆔 Сессия: ...{session_id[-6:]}")
-    # Счётчик
-    if supabase:
-        # Можно показать общее количество из БД
-        try:
-            count_res = supabase.table("visitors").select("id", count="exact").execute()
-            total = count_res.count or 0
-        except:
-            total = len(st.session_state.visitors)
-    else:
-        total = len(st.session_state.visitors)
-    st.metric("👥 Уникальных IP", total)
+    st.caption(f"🆔 ...{session_id[-8:]}")
+    st.metric("👥 Уникальных IP", total_ips)
     if not supabase:
-        st.caption("Счётчик сбрасывается при перезапуске приложения. Подключите Supabase для вечной статистики.")
+        st.caption("Подключите Supabase для вечного счётчика")
 
     menu = st.radio("Меню", [
         "🏠 Платформа", "🔍 Вакансии", "📨 Отклики", "📄 Резюме",
@@ -216,11 +205,7 @@ with st.sidebar:
         "🏆 Достижения", "📊 Рынок", "📡 Радары", "⚙️ Настройки"
     ], label_visibility="collapsed")
 
-# ... (далее идут все разделы – Платформа, Вакансии, Отклики и т.д.)
-# Полный код разделов вставь из предыдущей рабочей версии.
-# Я не дублирую их здесь, чтобы ответ был компактным, но ты можешь взять их из последнего стабильного кода.
-
-# Пример раздела "Платформа"
+# ===== Разделы =====
 if menu == "🏠 Платформа":
     st.markdown('<p class="main-header">🏠 Платформа</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
@@ -228,8 +213,121 @@ if menu == "🏠 Платформа":
     col2.metric("Откликов", len(user_data["applications"]))
     col3.metric("Резюме", "Загружено" if user_data["resume_original"] else "Нет")
     st.subheader("Последние отклики")
-    for app in user_data["applications"][-5:]:
-        st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
+    if user_data["applications"]:
+        for app in user_data["applications"][-5:]:
+            st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
+    else:
+        st.info("Нет откликов")
 
-# Остальные разделы (Вакансии, Отклики, Резюме, Аудит, ...) скопируй из предыдущего полного кода.
-# Они остались неизменными, только вместо user из авторизации теперь используем session_id и user_data из st.session_state[session_id].
+elif menu == "🔍 Вакансии":
+    st.markdown('<p class="main-header">🔍 Поиск вакансий (hh.ru)</p>', unsafe_allow_html=True)
+    query = st.text_input("Ключевые слова")
+    area = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)], format_func=lambda x: x[0])
+    if st.button("Найти"):
+        vacs = search_hh_vacancies(query, area[1])
+        if vacs:
+            for v in vacs[:10]:
+                with st.expander(f"{v['name']} — {v['employer']['name'] if v.get('employer') else ''}"):
+                    desc = v.get("snippet",{}).get("requirement","") + " " + v.get("snippet",{}).get("responsibility","")
+                    st.write(desc[:300])
+                    st.markdown(f"[Открыть на hh.ru]({v.get('alternate_url')})")
+        else:
+            st.warning("Ничего не найдено")
+
+elif menu == "📨 Отклики":
+    st.markdown('<p class="main-header">📨 Мои отклики</p>', unsafe_allow_html=True)
+    if not user_data["applications"]:
+        st.info("Нет откликов")
+    else:
+        for i, app in enumerate(user_data["applications"]):
+            with st.expander(f"{app['title']} — {app['employer']} ({app['status']})"):
+                st.write(app.get("description",""))
+                if app.get("letter"):
+                    st.code(app["letter"])
+                st.markdown(f"[Открыть на hh.ru]({app['url']})")
+                col1, col2, col3 = st.columns(3)
+                if col1.button("Отправил", key=f"sent_{i}"):
+                    app["status"] = "Отправлен"
+                    st.rerun()
+                if col2.button("Повторить", key=f"rep_{i}"):
+                    app["status"] = "Повтор"
+                    st.rerun()
+                if col3.button("Пропустить", key=f"skip_{i}"):
+                    app["status"] = "Пропущен"
+                    st.rerun()
+
+elif menu == "📄 Резюме":
+    st.markdown('<p class="main-header">📄 Моё резюме</p>', unsafe_allow_html=True)
+    uploaded = st.file_uploader("Загрузить PDF/DOCX/TXT", type=["pdf","docx","txt"])
+    if uploaded:
+        file_bytes = uploaded.read()
+        if uploaded.type == "application/pdf":
+            user_data["resume_original"] = extract_text_from_pdf(file_bytes)
+        elif uploaded.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            user_data["resume_original"] = extract_text_from_docx(file_bytes)
+        else:
+            user_data["resume_original"] = file_bytes.decode("utf-8")
+        st.success("Загружено!")
+    if user_data["resume_original"]:
+        with st.expander("Исходный текст"):
+            st.text(user_data["resume_original"][:1000])
+        if st.button("✨ Улучшить резюме"):
+            with st.spinner("ИИ работает..."):
+                improved = ask_ai(f"Улучши резюме: {user_data['resume_original'][:3000]}", max_tokens=1500)
+            if not improved.startswith("[ОШИБКА"):
+                user_data["resume_improved"] = improved
+                st.download_button("📥 DOCX", create_docx(improved), "rss_job_resume.docx")
+                st.download_button("📥 PDF", create_pdf(improved), "rss_job_resume.pdf")
+            else:
+                st.error(improved)
+
+elif menu == "🔥 Аудит":
+    st.markdown('<p class="main-header">🔥 Аудит резюме</p>', unsafe_allow_html=True)
+    if user_data["resume_original"]:
+        if st.button("Запустить аудит"):
+            with st.spinner("Анализируем..."):
+                result = ai_roast(user_data["resume_original"])
+            st.write(result)
+    else:
+        st.warning("Сначала загрузите резюме")
+
+elif menu == "✉️ Письмо":
+    st.markdown('<p class="main-header">✉️ Сопроводительное письмо</p>', unsafe_allow_html=True)
+    job_desc = st.text_area("Описание вакансии")
+    if st.button("Сгенерировать"):
+        if user_data["resume_original"] and job_desc:
+            with st.spinner("..."):
+                letter = ai_cover_letter(user_data["resume_original"], job_desc)
+            st.code(letter)
+        else:
+            st.warning("Нужны резюме и описание вакансии")
+
+elif menu == "✅ Чек-лист":
+    st.markdown('<p class="main-header">✅ Чек-лист перед откликом</p>', unsafe_allow_html=True)
+    st.write(ai_checklist())
+
+elif menu == "🔗 LinkedIn аудит":
+    st.markdown('<p class="main-header">🔗 Аудит LinkedIn профиля</p>', unsafe_allow_html=True)
+    st.write(ai_linkedin_audit())
+
+elif menu == "🏆 Достижения":
+    st.markdown('<p class="main-header">🏆 Мои достижения</p>', unsafe_allow_html=True)
+    if user_data["resume_original"]:
+        if st.button("Проанализировать достижения"):
+            with st.spinner("..."):
+                result = ai_achievements(user_data["resume_original"])
+            st.write(result)
+    else:
+        st.warning("Нужно резюме")
+
+elif menu == "📊 Рынок":
+    st.markdown('<p class="main-header">📊 Аналитика рынка</p>', unsafe_allow_html=True)
+    st.write(ai_market())
+
+elif menu == "📡 Радары":
+    st.markdown('<p class="main-header">📡 Радары вакансий</p>', unsafe_allow_html=True)
+    st.write(ai_radars())
+
+elif menu == "⚙️ Настройки":
+    st.markdown('<p class="main-header">⚙️ Настройки аккаунта</p>', unsafe_allow_html=True)
+    st.write("Здесь будут настройки профиля, уведомлений и т.д.")
