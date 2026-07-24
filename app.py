@@ -15,7 +15,6 @@ import time
 
 st.set_page_config(page_title="RSS job", layout="wide")
 
-# ---------- API-ключи ----------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID")
 YANDEX_CLIENT_SECRET = os.getenv("YANDEX_CLIENT_SECRET")
@@ -151,7 +150,7 @@ def logout():
     st.session_state.auth_provider = None
     st.rerun()
 
-# ---------- ИИ (Groq) ----------
+# ---------- ИИ ----------
 def ask_ai(prompt, max_tokens=2500, retries=3):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
@@ -254,18 +253,134 @@ def main():
         "resume_original": "", "resume_improved": ""
     })
 
-    # Далее идут все разделы (Платформа, Вакансии, Отклики, Резюме, Аудит и т.д.)
-    # Полный код всех разделов возьми из предыдущего ответа (где была полная версия без Яндекс OAuth)
-    # Здесь я не буду дублировать весь интерфейс, чтобы не перегружать сообщение.
-    # Просто вставь тот же самый интерфейс, что был в коде без Яндекс OAuth.
+    if menu == "🏠 Платформа":
+        st.markdown('<p class="main-header">🏠 Платформа</p>', unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Правил", len(user_data["rules"]))
+        col2.metric("Откликов", len(user_data["applications"]))
+        col3.metric("Резюме", "Загружено" if user_data["resume_original"] else "Нет")
+        st.subheader("Последние отклики")
+        for app in user_data["applications"][-5:]:
+            st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
+
+    elif menu == "🔍 Вакансии":
+        st.markdown('<p class="main-header">🔍 Поиск вакансий (hh.ru)</p>', unsafe_allow_html=True)
+        query = st.text_input("Ключевые слова")
+        area = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)], format_func=lambda x: x[0])
+        if st.button("Найти"):
+            vacs = search_hh_vacancies(query, area[1])
+            if vacs:
+                for v in vacs[:10]:
+                    with st.expander(f"{v['name']} — {v['employer']['name'] if v.get('employer') else ''}"):
+                        desc = v.get("snippet",{}).get("requirement","") + " " + v.get("snippet",{}).get("responsibility","")
+                        st.write(desc[:300])
+                        st.markdown(f"[Открыть на hh.ru]({v.get('alternate_url')})")
+            else:
+                st.warning("Ничего не найдено")
+
+    elif menu == "📨 Отклики":
+        st.markdown('<p class="main-header">📨 Мои отклики</p>', unsafe_allow_html=True)
+        if not user_data["applications"]:
+            st.info("Нет откликов")
+        else:
+            for i, app in enumerate(user_data["applications"]):
+                with st.expander(f"{app['title']} — {app['employer']} ({app['status']})"):
+                    st.write(app["description"])
+                    if app.get("letter"):
+                        st.code(app["letter"])
+                    st.markdown(f"[Открыть на hh.ru]({app['url']})")
+                    col1, col2, col3 = st.columns(3)
+                    if col1.button("Отправил", key=f"sent_{i}"):
+                        app["status"] = "Отправлен"
+                        st.rerun()
+                    if col2.button("Повторить", key=f"rep_{i}"):
+                        app["status"] = "Повтор"
+                        st.rerun()
+                    if col3.button("Пропустить", key=f"skip_{i}"):
+                        app["status"] = "Пропущен"
+                        st.rerun()
+
+    elif menu == "📄 Резюме":
+        st.markdown('<p class="main-header">📄 Моё резюме</p>', unsafe_allow_html=True)
+        uploaded = st.file_uploader("Загрузить PDF/DOCX/TXT", type=["pdf","docx","txt"])
+        if uploaded:
+            file_bytes = uploaded.read()
+            if uploaded.type == "application/pdf":
+                user_data["resume_original"] = extract_text_from_pdf(file_bytes)
+            elif uploaded.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                user_data["resume_original"] = extract_text_from_docx(file_bytes)
+            else:
+                user_data["resume_original"] = file_bytes.decode("utf-8")
+            st.success("Загружено!")
+        if user_data["resume_original"]:
+            with st.expander("Исходный текст"):
+                st.text(user_data["resume_original"][:1000])
+            if st.button("✨ Улучшить резюме"):
+                with st.spinner("ИИ работает..."):
+                    improved = ask_ai(f"Улучши резюме: {user_data['resume_original'][:3000]}", max_tokens=1500)
+                if not improved.startswith("[ОШИБКА"):
+                    user_data["resume_improved"] = improved
+                    st.download_button("📥 DOCX", create_docx(improved), "rss_job_resume.docx")
+                    st.download_button("📥 PDF", create_pdf(improved), "rss_job_resume.pdf")
+                else:
+                    st.error(improved)
+
+    elif menu == "🔥 Аудит":
+        st.markdown('<p class="main-header">🔥 Аудит резюме</p>', unsafe_allow_html=True)
+        if user_data["resume_original"]:
+            if st.button("Запустить аудит"):
+                with st.spinner("Анализируем..."):
+                    result = ai_roast(user_data["resume_original"])
+                st.write(result)
+        else:
+            st.warning("Сначала загрузите резюме")
+
+    elif menu == "✉️ Письмо":
+        st.markdown('<p class="main-header">✉️ Сопроводительное письмо</p>', unsafe_allow_html=True)
+        job_desc = st.text_area("Описание вакансии")
+        if st.button("Сгенерировать"):
+            if user_data["resume_original"] and job_desc:
+                with st.spinner("..."):
+                    letter = ai_cover_letter(user_data["resume_original"], job_desc)
+                st.code(letter)
+            else:
+                st.warning("Нужны резюме и описание вакансии")
+
+    elif menu == "✅ Чек-лист":
+        st.markdown('<p class="main-header">✅ Чек-лист перед откликом</p>', unsafe_allow_html=True)
+        st.write(ai_checklist())
+
+    elif menu == "🔗 LinkedIn аудит":
+        st.markdown('<p class="main-header">🔗 Аудит LinkedIn профиля</p>', unsafe_allow_html=True)
+        st.write(ai_linkedin_audit())
+
+    elif menu == "🏆 Достижения":
+        st.markdown('<p class="main-header">🏆 Мои достижения</p>', unsafe_allow_html=True)
+        if user_data["resume_original"]:
+            if st.button("Проанализировать достижения"):
+                with st.spinner("..."):
+                    result = ai_achievements(user_data["resume_original"])
+                st.write(result)
+        else:
+            st.warning("Нужно резюме")
+
+    elif menu == "📊 Рынок":
+        st.markdown('<p class="main-header">📊 Аналитика рынка</p>', unsafe_allow_html=True)
+        st.write(ai_market())
+
+    elif menu == "📡 Радары":
+        st.markdown('<p class="main-header">📡 Радары вакансий</p>', unsafe_allow_html=True)
+        st.write(ai_radars())
+
+    elif menu == "⚙️ Настройки":
+        st.markdown('<p class="main-header">⚙️ Настройки аккаунта</p>', unsafe_allow_html=True)
+        st.write("Здесь будут настройки профиля, уведомлений и т.д.")
 
 # ---------- Экран входа ----------
 def auth_screen():
     st.title("🔐 RSS job")
-    # Проверяем колбэк Яндекса
     if "code" in st.experimental_get_query_params():
         handle_yandex_callback()
-    # Кнопка Яндекса
     if YANDEX_CLIENT_ID:
         yandex_login()
     st.write("---")
