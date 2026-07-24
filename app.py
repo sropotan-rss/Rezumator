@@ -5,41 +5,75 @@ import os
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
+import time
 
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-# Настройки OpenRouter
-API_KEY = os.getenv("OPENROUTER_API_KEY")
-if not API_KEY:
-    st.error("❌ Не найден ключ OpenRouter. Добавь его в Secrets (OPENROUTER_API_KEY).")
+HF_TOKEN = os.getenv("HF_TOKEN")
+if not HF_TOKEN:
+    st.error("❌ Не найден токен Hugging Face. Добавь его в Secrets (HF_TOKEN).")
     st.stop()
 
-MODEL = "mistralai/mistral-7b-instruct:free"
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Список моделей для автоперебора (проверенные бесплатные русскоязычные)
+MODELS = [
+    "mistralai/Mistral-7B-Instruct-v0.2",
+    "google/flan-t5-large",
+    "facebook/bart-large-mnli",
+    "openchat/openchat-3.5-0106"
+]
+# Резервный вариант – использовать OpenRouter (платный, но дешёвый, если HF не работает)
+OPENROUTER_FALLBACK = False  # можешь включить, добавив OPENROUTER_API_KEY в Secrets
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 def ask_ai(prompt: str) -> str:
-    """Отправляет запрос в OpenRouter, возвращает текст или ОПИСАНИЕ ошибки."""
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": 800
-    }
+    """Отправляет запрос к Hugging Face, при неудаче пробует другие модели."""
+    for model in MODELS:
+        try:
+            response = requests.post(
+                f"https://api-inference.huggingface.co/models/{model}",
+                headers={"Authorization": f"Bearer {HF_TOKEN}"},
+                json={"inputs": prompt, "parameters": {"max_new_tokens": 800, "temperature": 0.7}},
+                timeout=30
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, list) and len(data) > 0:
+                    return data[0]["generated_text"]
+                elif isinstance(data, dict) and "generated_text" in data:
+                    return data["generated_text"]
+                else:
+                    return str(data)
+            # Если модель загружается – ждём 5 секунд и пробуем ещё раз
+            elif response.status_code == 503 and "loading" in response.text.lower():
+                time.sleep(5)
+                continue
+        except Exception:
+            continue
+    # Если ни одна модель HF не сработала, используем OpenRouter (если есть ключ)
+    if OPENROUTER_FALLBACK and OPENROUTER_API_KEY:
+        return ask_ai_openrouter(prompt)
+    return "[Ошибка] Все модели временно недоступны. Попробуйте позже."
+
+def ask_ai_openrouter(prompt: str) -> str:
     try:
-        r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
+        r = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
+            json={
+                "model": "google/gemma-2-2b-it",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.7,
+                "max_tokens": 800
+            },
+            timeout=30
+        )
         if r.status_code == 200:
-            data = r.json()
-            return data["choices"][0]["message"]["content"]
+            return r.json()["choices"][0]["message"]["content"]
         else:
-            # Возвращаем детальное описание ошибки
-            return f"[Ошибка API: {r.status_code}] {r.text}"
+            return f"[Ошибка OpenRouter: {r.status_code}] {r.text}"
     except Exception as e:
-        return f"[Ошибка соединения] {e}"
+        return f"[Ошибка OpenRouter] {e}"
 
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
@@ -64,19 +98,16 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 - changes_summary: список сделанных изменений
 """
     raw = ask_ai(prompt)
-    # Если ответ начинается с [Ошибка, показываем его как есть
-    if raw.startswith("["):
-        return {"rewritten": raw, "changes_summary": ["Ошибка при обращении к нейросети."]}
-    # Пытаемся извлечь JSON
+    if raw.startswith("[Ошибка"):
+        return {"rewritten": raw, "changes_summary": []}
     try:
         start = raw.find('{')
         end = raw.rfind('}') + 1
         if start != -1 and end != 0:
-            json_str = raw[start:end]
-            return json.loads(json_str)
+            return json.loads(raw[start:end])
     except:
         pass
-    return {"rewritten": raw, "changes_summary": ["Ответ не в формате JSON, показан сырой текст."]}
+    return {"rewritten": raw, "changes_summary": ["Ответ не в JSON, показан сырой текст."]}
 
 def ai_analyze_match(resume_text, job_description):
     prompt = f"""Проанализируй соответствие резюме и вакансии. Оцени по шкале 0-100.
@@ -92,14 +123,13 @@ def ai_analyze_match(resume_text, job_description):
 - tips: советы по улучшению резюме
 """
     raw = ask_ai(prompt)
-    if raw.startswith("["):
+    if raw.startswith("[Ошибка"):
         return {"score": 0, "cover_letter": raw, "missing_skills": [], "tips": []}
     try:
         start = raw.find('{')
         end = raw.rfind('}') + 1
         if start != -1 and end != 0:
-            json_str = raw[start:end]
-            return json.loads(json_str)
+            return json.loads(raw[start:end])
     except:
         pass
     return {"score": 0, "cover_letter": raw[:500], "missing_skills": [], "tips": []}
@@ -147,7 +177,7 @@ with tab1:
         if not resume_text:
             st.warning("Сначала загрузите резюме.")
         else:
-            with st.spinner("ИИ работает..."):
+            with st.spinner("ИИ работает (до 30 сек)..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
             st.subheader("📝 Улучшенное резюме")
             st.text_area("Новый текст", result["rewritten"], height=300)
