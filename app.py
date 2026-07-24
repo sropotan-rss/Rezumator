@@ -9,22 +9,17 @@ import docx
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-# Настройки OpenRouter (бесплатно, нужен ключ)
+# Настройки OpenRouter
 API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not API_KEY:
     st.error("❌ Не найден ключ OpenRouter. Добавь его в Secrets (OPENROUTER_API_KEY).")
     st.stop()
 
-# Можно выбрать любую модель с OpenRouter (бесплатную)
-MODEL = "google/gemma-2-2b-it"  # Быстрая, понимает русский, бесплатная
-# Альтернативы:
-# "mistralai/mistral-7b-instruct" (бесплатная, но может быть занята)
-# "openchat/openchat-7b" (бесплатная)
-
+MODEL = "google/gemma-2-2b-it"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
-    """Отправляет запрос в OpenRouter (бесплатный прокси к LLM)."""
+    """Отправляет запрос в OpenRouter, возвращает текст или ОПИСАНИЕ ошибки."""
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
@@ -37,12 +32,14 @@ def ask_ai(prompt: str) -> str:
     }
     try:
         r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"]
+        if r.status_code == 200:
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
+        else:
+            # Возвращаем детальное описание ошибки
+            return f"[Ошибка API: {r.status_code}] {r.text}"
     except Exception as e:
-        st.error(f"Ошибка OpenRouter API: {e}")
-        return "{}"
+        return f"[Ошибка соединения] {e}"
 
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
@@ -67,6 +64,9 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 - changes_summary: список сделанных изменений
 """
     raw = ask_ai(prompt)
+    # Если ответ начинается с [Ошибка, показываем его как есть
+    if raw.startswith("["):
+        return {"rewritten": raw, "changes_summary": ["Ошибка при обращении к нейросети."]}
     # Пытаемся извлечь JSON
     try:
         start = raw.find('{')
@@ -76,7 +76,6 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
             return json.loads(json_str)
     except:
         pass
-    # Если JSON не получен, возвращаем сырой текст как rewritten
     return {"rewritten": raw, "changes_summary": ["Ответ не в формате JSON, показан сырой текст."]}
 
 def ai_analyze_match(resume_text, job_description):
@@ -93,6 +92,8 @@ def ai_analyze_match(resume_text, job_description):
 - tips: советы по улучшению резюме
 """
     raw = ask_ai(prompt)
+    if raw.startswith("["):
+        return {"score": 0, "cover_letter": raw, "missing_skills": [], "tips": []}
     try:
         start = raw.find('{')
         end = raw.rfind('}') + 1
@@ -120,7 +121,7 @@ def search_hh_vacancies(text, area=113, per_page=10):
         st.error("Ошибка при запросе к hh.ru")
         return []
 
-# Интерфейс (без изменений)
+# Интерфейс
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
 with tab1:
@@ -146,7 +147,7 @@ with tab1:
         if not resume_text:
             st.warning("Сначала загрузите резюме.")
         else:
-            with st.spinner("ИИ работает (может занять 10-30 секунд)..."):
+            with st.spinner("ИИ работает..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
             st.subheader("📝 Улучшенное резюме")
             st.text_area("Новый текст", result["rewritten"], height=300)
@@ -199,7 +200,7 @@ with tab3:
             if not current_resume:
                 st.warning("Введите текст резюме.")
             else:
-                with st.spinner("Анализируем (может занять 10-30 секунд)..."):
+                with st.spinner("Анализируем..."):
                     analysis = ai_analyze_match(current_resume, vac["description"])
                 st.metric("Соответствие", f"{analysis['score']}%")
                 st.subheader("📧 Сопроводительное письмо")
