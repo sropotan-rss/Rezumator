@@ -2,11 +2,9 @@ import streamlit as st
 import requests
 import json
 import os
-import tempfile
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
-from fpdf import FPDF
 import textwrap
 import datetime
 import time
@@ -134,34 +132,9 @@ def create_docx(text):
     buf.seek(0)
     return buf
 
-FONT_PATH = None
-def ensure_font():
-    global FONT_PATH
-    if FONT_PATH is None:
-        try:
-            r = requests.get("https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf")
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
-            tmp.write(r.content)
-            tmp.close()
-            FONT_PATH = tmp.name
-        except:
-            return False
-    return True
-
-def create_pdf(text):
-    if not ensure_font():
-        return None
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
-    pdf.set_font('DejaVu', '', 12)
-    for line in text.split('\n'):
-        for wline in textwrap.wrap(line, width=80):
-            pdf.cell(0, 8, wline, ln=True)
-    buf = BytesIO()
-    pdf.output(buf)
-    buf.seek(0)
-    return buf
+# PDF теперь создаётся как простой текстовый файл (без встроенных шрифтов)
+def create_pdf_text(text):
+    return BytesIO(text.encode('utf-8'))
 
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 def main():
@@ -171,7 +144,6 @@ def main():
     if st.sidebar.button("Выйти"):
         logout()
 
-    # Данные пользователя
     user_data = st.session_state.setdefault(user, {"rules": [], "applications": [], "resume_original": "", "resume_improved": ""})
 
     if menu == "🏠 Платформа":
@@ -266,9 +238,7 @@ def main():
                     user_data["resume_improved"] = res["rewritten"]
                     st.success("Улучшено!")
                     st.download_button("📥 DOCX", create_docx(res["rewritten"]), "rezumator.docx")
-                    pdf = create_pdf(res["rewritten"])
-                    if pdf:
-                        st.download_button("📥 PDF", pdf, "rezumator.pdf")
+                    st.download_button("📥 PDF (текстовый)", create_pdf_text(res["rewritten"]), "rezumator.pdf")
                 else:
                     st.error(res["rewritten"])
         if st.button("🔍 Аудит резюме"):
