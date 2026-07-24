@@ -26,12 +26,17 @@ if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
+# Проверка формата ключа
+if not SUPABASE_KEY.startswith("sb_publishable_"):
+    st.error("❌ SUPABASE_KEY должен начинаться с 'sb_publishable_'. Ты, вероятно, вставил секретный ключ. Используй Publishable key из Supabase → API Keys.")
+    st.stop()
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ---------- CSS СТИЛИ (jobturbo-like) ----------
+# ---------- CSS СТИЛИ ----------
 st.markdown("""
 <style>
     .main-header { font-size: 2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0; }
@@ -52,9 +57,6 @@ st.markdown("""
     }
     .stButton>button:hover {
         background-color: #EA580C;
-    }
-    .sidebar .sidebar-content {
-        background-color: #F8FAFC;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -257,7 +259,7 @@ def main_app():
         if st.button("🚪 Выйти"):
             supabase.auth.sign_out()
             st.session_state.clear()
-            st.experimental_rerun()
+            st.rerun()
 
     # Загрузка облачных данных
     rules = load_rules(user_id)
@@ -300,7 +302,7 @@ def main_app():
                 }
                 save_rule(user_id, rule)
                 st.success("Правило добавлено!")
-                st.experimental_rerun()
+                st.rerun()
 
         if rules:
             for rule in rules:
@@ -310,7 +312,6 @@ def main_app():
                     if c1.button("🚀 Запустить", key=f"run_{rule['id']}"):
                         vacs = search_hh_vacancies(rule["keywords"], rule["area"])
                         if vacs:
-                            new_apps = []
                             for vac in vacs[:5]:
                                 title = vac.get("name","")
                                 emp = vac["employer"]["name"] if vac.get("employer") else ""
@@ -322,13 +323,13 @@ def main_app():
                                     letter = match.get("cover_letter","")
                                 app = {"title":title,"employer":emp,"url":url,"description":desc[:300],"letter":letter,"status":"Новый","rule_name":rule["name"]}
                                 save_application(user_id, app)
-                            st.success(f"Добавлено {len(vacs[:5])} вакансий")
-                            st.experimental_rerun()
+                            st.success(f"Добавлено вакансий: {len(vacs[:5])}")
+                            st.rerun()
                         else:
                             st.warning("Ничего не найдено")
                     if c2.button("🗑 Удалить", key=f"del_{rule['id']}"):
                         delete_rule(rule["id"])
-                        st.experimental_rerun()
+                        st.rerun()
         else:
             st.info("Нет правил")
 
@@ -349,13 +350,13 @@ def main_app():
                     c1,c2,c3 = st.columns(3)
                     if c1.button("✅ Отправил", key=f"sent_{app['id']}"):
                         update_application(app["id"], {"status": "Отправлен"})
-                        st.experimental_rerun()
+                        st.rerun()
                     if c2.button("⏰ Повторить через 3 дн.", key=f"rep_{app['id']}"):
                         update_application(app["id"], {"status": "Повтор", "follow_up_date": str(datetime.date.today() + datetime.timedelta(days=3))})
-                        st.experimental_rerun()
+                        st.rerun()
                     if c3.button("❌ Пропустить", key=f"skip_{app['id']}"):
                         update_application(app["id"], {"status": "Пропущен"})
-                        st.experimental_rerun()
+                        st.rerun()
 
     # ======== РЕЗЮМЕ ========
     elif menu == "📄 Резюме":
@@ -446,14 +447,14 @@ def main_app():
 # ========== ЭКРАН АВТОРИЗАЦИИ ==========
 def auth_screen():
     st.title("🔐 Rezumator")
-    menu = st.radio("", ["Вход", "Регистрация"])
+    menu = st.radio("Действие", ["Вход", "Регистрация"], label_visibility="visible")
     email = st.text_input("Email")
     password = st.text_input("Пароль", type="password")
     if menu == "Вход":
         if st.button("Войти"):
             if login(email, password):
                 st.success("Успешный вход!")
-                st.experimental_rerun()
+                st.rerun()
     else:
         if st.button("Зарегистрироваться"):
             if signup(email, password):
