@@ -10,46 +10,21 @@ from fpdf import FPDF
 import textwrap
 import datetime
 import time
-from supabase import create_client, Client
 
-# ---------- КОНФИГУРАЦИЯ ----------
 st.set_page_config(page_title="Rezumator", layout="wide")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
 if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-# Пытаемся подключиться к Supabase
-supabase = None
-cloud_enabled = False
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        # Простейшая проверка – вызов функции auth
-        supabase.auth.get_session()  # не упадёт, если ключ корректен
-        cloud_enabled = True
-    except Exception:
-        supabase = None
-        cloud_enabled = False
-
 MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ---------- CSS СТИЛИ ----------
+# ---------- CSS ----------
 st.markdown("""
 <style>
     .main-header { font-size: 2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0; }
-    .card {
-        background: #FFFFFF;
-        border-radius: 12px;
-        padding: 1.5rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        margin-bottom: 1rem;
-    }
     .stButton>button {
         background-color: #F97316;
         color: white;
@@ -58,119 +33,30 @@ st.markdown("""
         border: none;
         padding: 0.5rem 1.5rem;
     }
-    .stButton>button:hover {
-        background-color: #EA580C;
-    }
+    .stButton>button:hover { background-color: #EA580C; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- АВТОРИЗАЦИЯ (использует Supabase, если доступен) ----------
+# ---------- Локальная авторизация ----------
 def login(email, password):
-    if not cloud_enabled:
-        st.warning("Облачное сохранение отключено. Вход работает локально (данные не сохранятся).")
-        # Эмуляция входа – сохраняем email в сессии
-        st.session_state["user_email"] = email
-        st.session_state["user_id"] = email  # идентификатор – email
+    users = st.session_state.get("users", {})
+    if email in users and users[email] == password:
+        st.session_state.user = email
         return True
-    try:
-        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        return res
-    except Exception as e:
-        st.error(f"Ошибка входа: {e}")
-        return None
+    return False
 
-def signup(email, password):
-    if not cloud_enabled:
-        st.warning("Облачное сохранение отключено. Регистрация эмулируется (данные не сохранятся).")
-        st.success("Регистрация эмулирована (проверка почты не требуется). Теперь войдите.")
-        return True
-    try:
-        supabase.auth.sign_up({"email": email, "password": password})
-        return True
-    except Exception as e:
-        st.error(f"Ошибка регистрации: {e}")
-        return None
+def register(email, password):
+    users = st.session_state.get("users", {})
+    if email in users:
+        return False
+    users[email] = password
+    st.session_state.users = users
+    st.session_state.user = email
+    return True
 
-def get_session():
-    if not cloud_enabled:
-        # Локальная сессия – проверяем, есть ли email
-        return st.session_state.get("user_email")
-    try:
-        return supabase.auth.get_session()
-    except:
-        return None
-
-# ---------- ЗАГРУЗКА ДАННЫХ (облако или сессия) ----------
-def load_rules(user_id):
-    if not cloud_enabled:
-        return st.session_state.get("rules", [])
-    try:
-        res = supabase.table("user_rules").select("*").eq("user_id", user_id).execute()
-        return res.data or []
-    except:
-        return []
-
-def save_rule(user_id, rule):
-    if not cloud_enabled:
-        st.session_state.setdefault("rules", []).append(rule)
-        return
-    supabase.table("user_rules").insert({**rule, "user_id": user_id}).execute()
-
-def delete_rule(rule_id, idx):
-    if not cloud_enabled:
-        if "rules" in st.session_state:
-            st.session_state.rules.pop(idx)
-        return
-    supabase.table("user_rules").delete().eq("id", rule_id).execute()
-
-def load_applications(user_id):
-    if not cloud_enabled:
-        return st.session_state.get("applications", [])
-    try:
-        res = supabase.table("user_applications").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        return res.data or []
-    except:
-        return []
-
-def save_application(user_id, app):
-    if not cloud_enabled:
-        st.session_state.setdefault("applications", []).append(app)
-        return
-    supabase.table("user_applications").insert({**app, "user_id": user_id}).execute()
-
-def update_application(app_id, updates, idx):
-    if not cloud_enabled:
-        if "applications" in st.session_state:
-            st.session_state.applications[idx].update(updates)
-        return
-    supabase.table("user_applications").update(updates).eq("id", app_id).execute()
-
-def load_resume(user_id):
-    if not cloud_enabled:
-        return st.session_state.get("resume_data")
-    try:
-        res = supabase.table("user_resumes").select("*").eq("user_id", user_id).limit(1).single().execute()
-        return res.data
-    except:
-        return None
-
-def save_resume(user_id, original, improved=None):
-    if not cloud_enabled:
-        st.session_state.resume_data = {"original_text": original, "improved_text": improved or ""}
-        return
-    existing = load_resume(user_id)
-    if existing:
-        supabase.table("user_resumes").update({
-            "original_text": original,
-            "improved_text": improved or existing.get("improved_text"),
-            "updated_at": "now()"
-        }).eq("user_id", user_id).execute()
-    else:
-        supabase.table("user_resumes").insert({
-            "user_id": user_id,
-            "original_text": original,
-            "improved_text": improved or ""
-        }).execute()
+def logout():
+    st.session_state.pop("user", None)
+    st.rerun()
 
 # ---------- ИИ ----------
 def ask_ai(prompt, max_tokens=2500, retries=3):
@@ -182,14 +68,11 @@ def ask_ai(prompt, max_tokens=2500, retries=3):
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
             elif r.status_code == 429:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(5)
                 continue
             return f"[Ошибка Groq {r.status_code}] {r.text}"
-        except:
-            if attempt < retries - 1:
-                time.sleep(3)
-            else:
-                return "[Сетевая ошибка]"
+        except Exception:
+            time.sleep(2)
     return "[Ошибка]"
 
 def extract_text_from_pdf(file_bytes):
@@ -200,29 +83,23 @@ def extract_text_from_docx(file_bytes):
     doc = docx.Document(BytesIO(file_bytes))
     return "\n".join(p.text for p in doc.paragraphs)
 
-def ai_rewrite_resume(resume_text, job_description="", style="professional"):
-    prompt = f"""Ты — карьерный консультант. Улучши резюме, сохранив факты.
-Стиль: {style}. Язык: русский.
-{f'Вакансия: {job_description}' if job_description else ''}
+def ai_rewrite_resume(resume_text, job="", style="professional"):
+    prompt = f"""Улучши резюме. Стиль: {style}. Язык: русский.
+{f'Вакансия: {job}' if job else ''}
 Резюме: {resume_text}
-Верни JSON: {{"rewritten": "...", "changes_summary": [...]}}"""
-    raw = ask_ai(prompt, max_tokens=2500)
+JSON: {{"rewritten": "текст", "changes_summary": ["изменение1"]}}"""
+    raw = ask_ai(prompt)
     try:
         if "{" in raw:
-            data = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
-            rewritten = data.get("rewritten", raw)
-            if isinstance(rewritten, (dict, list)):
-                rewritten = json.dumps(rewritten, ensure_ascii=False, indent=2)
-            return {"rewritten": rewritten, "changes_summary": data.get("changes_summary", [])}
+            d = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+            return {"rewritten": d.get("rewritten", raw), "changes_summary": d.get("changes_summary", [])}
     except:
         pass
     return {"rewritten": raw, "changes_summary": []}
 
-def ai_analyze_match(resume_text, job_description):
-    prompt = f"""Оцени соответствие резюме вакансии (0-100).
-Резюме: {resume_text}
-Вакансия: {job_description}
-JSON: {{"score":..., "cover_letter":..., "missing_skills":..., "tips":...}}"""
+def ai_analyze_match(resume_text, job_desc):
+    prompt = f"""Оцени соответствие (0-100). Резюме: {resume_text}. Вакансия: {job_desc}
+JSON: {{"score": число, "cover_letter": "письмо", "missing_skills": [], "tips": []}}"""
     raw = ask_ai(prompt, max_tokens=1000)
     try:
         if "{" in raw:
@@ -232,9 +109,9 @@ JSON: {{"score":..., "cover_letter":..., "missing_skills":..., "tips":...}}"""
     return {"score": 0, "cover_letter": raw[:500], "missing_skills": [], "tips": []}
 
 def ai_audit_resume(resume_text):
-    prompt = f"""Ты — HR-эксперт. Проведи аудит резюме по 5 критериям (оценка 1-10).
+    prompt = f"""Аудит резюме по 5 критериям (1-10).
 Резюме: {resume_text}
-JSON с полями: verdict, sections (массив из name, score, comment), overall_score, top_3_strengths, top_3_weaknesses, action_plan, keywords_to_add"""
+JSON: {{"verdict": "...", "sections": [{{"name": "...", "score": N, "comment": "..."}}], "overall_score": N, "top_3_strengths": [...], "top_3_weaknesses": [...], "action_plan": [...], "keywords_to_add": [...]}}"""
     raw = ask_ai(prompt, max_tokens=3000)
     try:
         if "{" in raw:
@@ -243,7 +120,7 @@ JSON с полями: verdict, sections (массив из name, score, comment)
         pass
     return {"verdict": raw, "sections": [], "overall_score": 0, "top_3_strengths": [], "top_3_weaknesses": [], "action_plan": [], "keywords_to_add": []}
 
-def search_hh_vacancies(text, area=113, cookie=""):
+def search_hh_vacancies(text, area=113):
     r = requests.get("https://api.hh.ru/vacancies", params={"text": text, "area": area, "per_page": 10}, headers={"User-Agent": "Rezumator/1.0"})
     return r.json().get("items", []) if r.status_code == 200 else []
 
@@ -286,37 +163,179 @@ def create_pdf(text):
     buf.seek(0)
     return buf
 
-# ========== ИНТЕРФЕЙС ==========
-def main_app():
-    user = get_session()
-    user_id = user.email if cloud_enabled else st.session_state.get("user_email", "local")
-    if not cloud_enabled:
-        st.info("⚠️ Облачное сохранение недоступно. Все данные хранятся только в этой сессии и пропадут при перезагрузке.")
+# ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
+def main():
+    user = st.session_state.user
+    st.sidebar.markdown(f"👤 {user}")
+    menu = st.sidebar.radio("Меню", ["🏠 Платформа", "⚙️ Автоправила", "📨 Отклики", "📄 Резюме", "📊 Анализ"], label_visibility="collapsed")
+    if st.sidebar.button("Выйти"):
+        logout()
 
-    # Загрузка данных (облако или сессия)
-    rules = load_rules(user_id)
-    applications = load_applications(user_id)
-    resume_data = load_resume(user_id)
+    # Данные пользователя
+    user_data = st.session_state.setdefault(user, {"rules": [], "applications": [], "resume_original": "", "resume_improved": ""})
 
-    if "resume_text" not in st.session_state:
-        st.session_state.resume_text = resume_data.get("original_text", "") if resume_data else ""
-    if "improved_resume" not in st.session_state:
-        st.session_state.improved_resume = resume_data.get("improved_text", "") if resume_data else ""
+    if menu == "🏠 Платформа":
+        st.header("Платформа")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Правил", len(user_data["rules"]))
+        col2.metric("Откликов", len(user_data["applications"]))
+        col3.metric("Резюме", "Загружено" if user_data["resume_original"] else "Нет")
+        st.subheader("Последние отклики")
+        for app in user_data["applications"][-5:]:
+            st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
 
-    # Боковая панель
-    with st.sidebar:
-        st.markdown("## 🚀 Rezumator")
-        st.markdown(f"👤 {user_id}")
-        menu = st.radio("Меню", ["🏠 Платформа", "⚙️ Автоправила", "📨 Отклики", "📄 Резюме", "📊 Анализ"], label_visibility="collapsed")
-        st.markdown("---")
-        if st.button("🚪 Выйти"):
-            if cloud_enabled:
-                supabase.auth.sign_out()
-            st.session_state.clear()
-            st.rerun()
+    elif menu == "⚙️ Автоправила":
+        st.header("Автоправила")
+        with st.form("rule"):
+            name = st.text_input("Название")
+            keywords = st.text_input("Ключевые слова")
+            area = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)], format_func=lambda x: x[0])
+            letters = st.checkbox("Генерировать письма", True)
+            if st.form_submit_button("Создать"):
+                user_data["rules"].append({"name": name, "keywords": keywords, "area": area[1], "letters": letters})
+                st.success("Правило создано!")
+                st.rerun()
+        for rule in user_data["rules"]:
+            with st.expander(f"📌 {rule['name']}"):
+                st.write(f"Ключевые слова: {rule['keywords']}")
+                if st.button("Запустить", key=f"run_{rule['name']}"):
+                    vacs = search_hh_vacancies(rule["keywords"], rule["area"])
+                    if vacs:
+                        for v in vacs[:5]:
+                            title = v["name"]
+                            emp = v.get("employer", {}).get("name", "")
+                            url = v.get("alternate_url", "")
+                            desc = v.get("snippet", {}).get("requirement", "") + " " + v.get("snippet", {}).get("responsibility", "")
+                            letter = ""
+                            if rule["letters"] and user_data["resume_original"]:
+                                letter = ai_analyze_match(user_data["resume_original"], desc).get("cover_letter", "")
+                            user_data["applications"].append({"title": title, "employer": emp, "url": url, "description": desc[:300], "letter": letter, "status": "Новый"})
+                        st.success(f"Добавлено {min(len(vacs), 5)} откликов")
+                        st.rerun()
+                    else:
+                        st.warning("Ничего не найдено")
+                if st.button("Удалить", key=f"del_{rule['name']}"):
+                    user_data["rules"].remove(rule)
+                    st.rerun()
 
-    # ... (далее идёт код платформы, правил, откликов, резюме, анализа – он полностью идентичен предыдущему, только в вызовах delete_rule и update_application добавлен параметр idx)
+    elif menu == "📨 Отклики":
+        st.header("Отклики")
+        if not user_data["applications"]:
+            st.info("Нет откликов")
+        else:
+            for i, app in enumerate(user_data["applications"]):
+                with st.expander(f"{app['title']} — {app['employer']} ({app['status']})"):
+                    st.write(app["description"])
+                    if app["letter"]:
+                        st.code(app["letter"])
+                    st.markdown(f"[Открыть на hh.ru]({app['url']})")
+                    c1, c2, c3 = st.columns(3)
+                    if c1.button("Отправил", key=f"sent_{i}"):
+                        app["status"] = "Отправлен"
+                        st.rerun()
+                    if c2.button("Повторить", key=f"repeat_{i}"):
+                        app["status"] = "Повтор"
+                        st.rerun()
+                    if c3.button("Пропустить", key=f"skip_{i}"):
+                        app["status"] = "Пропущен"
+                        st.rerun()
 
-    # Я добавлю изменённые вызовы, чтобы не занимать место полным кодом.
-    # Вместо delete_rule(rule['id']) -> delete_rule(rule['id'], rules.index(rule))
-    # Вместо update_application(app['id'], ...) -> update_application(app['id'], ..., applications.index(app))
+    elif menu == "📄 Резюме":
+        st.header("Резюме")
+        uploaded = st.file_uploader("Загрузить файл", type=["pdf", "docx", "txt"])
+        if uploaded:
+            file_bytes = uploaded.read()
+            if uploaded.type == "application/pdf":
+                text = extract_text_from_pdf(file_bytes)
+            elif uploaded.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                text = extract_text_from_docx(file_bytes)
+            else:
+                text = file_bytes.decode("utf-8")
+            user_data["resume_original"] = text
+            st.success("Резюме загружено!")
+        if user_data["resume_original"]:
+            with st.expander("Исходный текст"):
+                st.text(user_data["resume_original"][:1000])
+        if st.button("✨ Улучшить"):
+            if not user_data["resume_original"]:
+                st.warning("Загрузите резюме")
+            else:
+                with st.spinner("ИИ работает..."):
+                    res = ai_rewrite_resume(user_data["resume_original"])
+                if not res["rewritten"].startswith("[Ошибка"):
+                    user_data["resume_improved"] = res["rewritten"]
+                    st.success("Улучшено!")
+                    st.download_button("📥 DOCX", create_docx(res["rewritten"]), "rezumator.docx")
+                    pdf = create_pdf(res["rewritten"])
+                    if pdf:
+                        st.download_button("📥 PDF", pdf, "rezumator.pdf")
+                else:
+                    st.error(res["rewritten"])
+        if st.button("🔍 Аудит резюме"):
+            if not user_data["resume_original"]:
+                st.warning("Нет резюме")
+            else:
+                with st.spinner("Аудит..."):
+                    audit = ai_audit_resume(user_data["resume_original"])
+                if not audit["verdict"].startswith("[Ошибка"):
+                    st.write(audit["verdict"])
+                    st.progress(audit["overall_score"]/10)
+                    for sec in audit.get("sections", []):
+                        cols = st.columns([1,4])
+                        cols[0].metric(sec["name"], f"{sec['score']}/10")
+                        cols[1].caption(sec.get("comment", ""))
+                    c1, c2 = st.columns(2)
+                    c1.subheader("Сильные стороны")
+                    for s in audit["top_3_strengths"]:
+                        c1.write(f"- {s}")
+                    c2.subheader("Слабые стороны")
+                    for w in audit["top_3_weaknesses"]:
+                        c2.write(f"- {w}")
+                else:
+                    st.error(audit["verdict"])
+
+    elif menu == "📊 Анализ":
+        st.header("Анализ вакансий")
+        query = st.text_input("Ключевые слова")
+        area = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)], format_func=lambda x: x[0])
+        if st.button("Найти"):
+            vacs = search_hh_vacancies(query, area[1])
+            if vacs:
+                for v in vacs[:10]:
+                    with st.expander(f"{v['name']} — {v['employer']['name'] if v.get('employer') else ''}"):
+                        desc = v.get("snippet", {}).get("requirement", "") + " " + v.get("snippet", {}).get("responsibility", "")
+                        st.write(desc[:300])
+                        if user_data["resume_original"] and st.button(f"Анализировать {v['id']}", key=v["id"]):
+                            analysis = ai_analyze_match(user_data["resume_original"], desc)
+                            st.metric("Соответствие", f"{analysis['score']}%")
+                            st.code(analysis["cover_letter"])
+                            st.write("Недостающие навыки:", analysis["missing_skills"])
+                            st.write("Советы:", analysis["tips"])
+            else:
+                st.warning("Ничего не найдено")
+
+# ---------- ЭКРАН АВТОРИЗАЦИИ ----------
+def auth_screen():
+    st.title("🔐 Rezumator")
+    choice = st.radio("", ["Вход", "Регистрация"])
+    email = st.text_input("Email")
+    password = st.text_input("Пароль", type="password")
+    if choice == "Вход":
+        if st.button("Войти"):
+            if login(email, password):
+                st.success("Добро пожаловать!")
+                st.rerun()
+            else:
+                st.error("Неверный email или пароль")
+    else:
+        if st.button("Зарегистрироваться"):
+            if register(email, password):
+                st.success("Регистрация прошла успешно!")
+                st.rerun()
+            else:
+                st.error("Этот email уже зарегистрирован")
+
+if "user" not in st.session_state:
+    auth_screen()
+else:
+    main()
