@@ -12,14 +12,14 @@ import textwrap
 import datetime
 import time
 
-st.set_page_config(page_title="RSS job", layout="wide")
+st.set_page_config(page_title="RSS Job", layout="wide")
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-# ---------- Шрифт для PDF ----------
+# ---------- Шрифт PDF ----------
 @st.cache_resource
 def get_font_path():
     url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
@@ -34,11 +34,35 @@ def get_font_path():
         return None
 FONT_PATH = get_font_path()
 
-# ---------- Стили ----------
+# ---------- CSS ----------
 st.markdown("""
 <style>
-    .main { background-color: #f8fafc; }
-    .main-header { font-size: 2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 1rem; }
+    /* Общий фон */
+    .stApp { background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%); }
+    /* Карточки */
+    .tool-card {
+        background: white;
+        border-radius: 16px;
+        padding: 2rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        cursor: pointer;
+        text-align: center;
+        height: 200px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+    .tool-card:hover {
+        transform: translateY(-5px) scale(1.02);
+        box-shadow: 0 10px 20px rgba(0,0,0,0.15);
+    }
+    .tool-card h3 { color: #1E3A8A; margin: 0; font-size: 1.5rem; }
+    .tool-card p { color: #64748B; margin: 0.5rem 0 0; }
+    /* Заголовки */
+    .main-header { color: white; font-size: 2.5rem; font-weight: 700; text-align: center; margin-bottom: 2rem; }
+    /* Кнопки */
     .stButton>button {
         background-color: #F97316;
         color: white;
@@ -48,14 +72,12 @@ st.markdown("""
         padding: 0.5rem 1.5rem;
     }
     .stButton>button:hover { background-color: #EA580C; }
-    section[data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #e2e8f0;
-    }
+    /* Сайдбар */
+    section[data-testid="stSidebar"] { background: white; border-right: 1px solid #E2E8F0; }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Сессия пользователя ----------
+# ---------- Сессия ----------
 query_params = st.experimental_get_query_params()
 session_id = query_params.get("session", [None])[0]
 if not session_id:
@@ -68,11 +90,12 @@ if session_id not in st.session_state:
         "rules": [],
         "applications": [],
         "resume_original": "",
-        "resume_improved": ""
+        "resume_improved": "",
+        "page": "home"
     }
 user_data = st.session_state[session_id]
 
-# ---------- Счётчик уникальных IP (локальный) ----------
+# ---------- Счётчик IP ----------
 @st.cache_resource
 def get_visitor_set():
     return set()
@@ -104,6 +127,7 @@ def ask_ai(prompt, max_tokens=2500, retries=3):
             time.sleep(2)
     return f"[ОШИБКА] {last_err}"
 
+# ---------- Утилиты файлов ----------
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
     return "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -114,7 +138,7 @@ def extract_text_from_docx(file_bytes):
 
 def create_docx(text):
     doc = docx.Document()
-    doc.add_heading('RSS job', 0)
+    doc.add_heading('RSS Job', 0)
     for line in text.split('\n'):
         doc.add_paragraph(line)
     buf = BytesIO()
@@ -141,6 +165,7 @@ def search_hh_vacancies(text, area=113):
     r = requests.get("https://api.hh.ru/vacancies", params={"text": text, "area": area, "per_page": 10}, headers={"User-Agent": "RSSjob/1.0"})
     return r.json().get("items", []) if r.status_code == 200 else []
 
+# ---------- ИИ-инструменты ----------
 def ai_roast(resume_text):
     prompt = f"Проведи аудит резюме по 5 критериям (1-10): оформление, опыт, навыки, образование, ATS. Дай вердикт и советы.\nРезюме: {resume_text[:3000]}"
     return ask_ai(prompt, max_tokens=2000)
@@ -150,45 +175,67 @@ def ai_cover_letter(resume_text, job_desc):
     return ask_ai(prompt, max_tokens=800)
 
 def ai_checklist():
-    return "Чек-лист: 1. Проверь контакты, 2. Добавь ключевые слова, 3. Укажи достижения с цифрами."
+    return "✅ Проверь контакты\n✅ Добавь ключевые слова\n✅ Укажи достижения с цифрами"
 
 def ai_linkedin_audit():
-    return "Анализ LinkedIn: добавь хэштеги, обнови раздел 'Обо мне', получи рекомендации."
+    return "🔗 Добавь хэштеги, обнови 'Обо мне', получи рекомендации."
 
 def ai_achievements(resume_text):
     prompt = f"Извлеки ключевые достижения из резюме и предложи, как их лучше описать.\nРезюме: {resume_text[:2000]}"
     return ask_ai(prompt, max_tokens=1000)
 
 def ai_radars():
-    return "Радары: мониторинг вакансий по твоим ключевым словам — в разработке."
+    return "📡 Мониторинг вакансий — в разработке"
 
 def ai_market():
-    return "Рынок: средняя зарплата операционного директора — 270 000 ₽, востребованы навыки управления цепочками поставок."
+    return "📊 Средняя зарплата COO — 270 000 ₽"
 
-# ---------- Боковая панель ----------
-with st.sidebar:
-    st.markdown("## 🚀 RSS job")
-    st.caption(f"🆔 ...{session_id[-8:]}")
-    st.metric("👥 Уникальных IP", len(visitors))
-    menu = st.radio("Меню", [
-        "🏠 Платформа", "🔍 Вакансии", "📨 Отклики", "📄 Резюме",
-        "🔥 Аудит", "✉️ Письмо", "✅ Чек-лист", "🔗 LinkedIn аудит",
-        "🏆 Достижения", "📊 Рынок", "📡 Радары", "⚙️ Настройки"
-    ], label_visibility="collapsed")
+# ---------- СТРАНИЦЫ ----------
+def show_tool_page(title, func, *args, **kwargs):
+    """Обёртка для отображения страницы инструмента с кнопкой 'Назад'."""
+    st.markdown(f'<h1 class="main-header">{title}</h1>', unsafe_allow_html=True)
+    if st.button("← Назад ко всем инструментам"):
+        user_data["page"] = "home"
+        st.rerun()
+    func(*args, **kwargs)
 
-# ===== Разделы (полный код) =====
-if menu == "🏠 Платформа":
-    st.markdown('<p class="main-header">🏠 Платформа</p>', unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Правил", len(user_data["rules"]))
-    col2.metric("Откликов", len(user_data["applications"]))
-    col3.metric("Резюме", "Загружено" if user_data["resume_original"] else "Нет")
-    st.subheader("Последние отклики")
-    for app in user_data["applications"][-5:]:
-        st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
+def tool_resume():
+    st.markdown("### 📄 Загрузка резюме")
+    uploaded = st.file_uploader("Загрузите PDF/DOCX/TXT", type=["pdf","docx","txt"])
+    if uploaded:
+        file_bytes = uploaded.read()
+        if uploaded.type == "application/pdf":
+            user_data["resume_original"] = extract_text_from_pdf(file_bytes)
+        elif uploaded.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+            user_data["resume_original"] = extract_text_from_docx(file_bytes)
+        else:
+            user_data["resume_original"] = file_bytes.decode("utf-8")
+        st.success("Резюме загружено!")
+    if user_data["resume_original"]:
+        with st.expander("Исходный текст"):
+            st.text(user_data["resume_original"][:1000])
+        if st.button("✨ Улучшить резюме"):
+            with st.spinner("ИИ работает..."):
+                improved = ask_ai(f"Улучши резюме: {user_data['resume_original'][:3000]}", max_tokens=1500)
+            if not improved.startswith("[ОШИБКА"):
+                user_data["resume_improved"] = improved
+                st.download_button("📥 DOCX", create_docx(improved), "rss_job_resume.docx")
+                st.download_button("📥 PDF", create_pdf(improved), "rss_job_resume.pdf")
+            else:
+                st.error(improved)
 
-elif menu == "🔍 Вакансии":
-    st.markdown('<p class="main-header">🔍 Поиск вакансий (hh.ru)</p>', unsafe_allow_html=True)
+def tool_audit():
+    st.markdown("### 🔥 Аудит резюме")
+    if user_data["resume_original"]:
+        if st.button("Запустить аудит"):
+            with st.spinner("Анализируем..."):
+                result = ai_roast(user_data["resume_original"])
+            st.write(result)
+    else:
+        st.warning("Сначала загрузите резюме")
+
+def tool_vacancies():
+    st.markdown("### 🔍 Поиск вакансий (hh.ru)")
     query = st.text_input("Ключевые слова")
     area = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)], format_func=lambda x: x[0])
     if st.button("Найти"):
@@ -202,8 +249,8 @@ elif menu == "🔍 Вакансии":
         else:
             st.warning("Ничего не найдено")
 
-elif menu == "📨 Отклики":
-    st.markdown('<p class="main-header">📨 Мои отклики</p>', unsafe_allow_html=True)
+def tool_applications():
+    st.markdown("### 📨 Мои отклики")
     if not user_data["applications"]:
         st.info("Нет откликов")
     else:
@@ -224,43 +271,8 @@ elif menu == "📨 Отклики":
                     app["status"] = "Пропущен"
                     st.rerun()
 
-elif menu == "📄 Резюме":
-    st.markdown('<p class="main-header">📄 Моё резюме</p>', unsafe_allow_html=True)
-    uploaded = st.file_uploader("Загрузить PDF/DOCX/TXT", type=["pdf","docx","txt"])
-    if uploaded:
-        file_bytes = uploaded.read()
-        if uploaded.type == "application/pdf":
-            user_data["resume_original"] = extract_text_from_pdf(file_bytes)
-        elif uploaded.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-            user_data["resume_original"] = extract_text_from_docx(file_bytes)
-        else:
-            user_data["resume_original"] = file_bytes.decode("utf-8")
-        st.success("Загружено!")
-    if user_data["resume_original"]:
-        with st.expander("Исходный текст"):
-            st.text(user_data["resume_original"][:1000])
-        if st.button("✨ Улучшить резюме"):
-            with st.spinner("ИИ работает..."):
-                improved = ask_ai(f"Улучши резюме: {user_data['resume_original'][:3000]}", max_tokens=1500)
-            if not improved.startswith("[ОШИБКА"):
-                user_data["resume_improved"] = improved
-                st.download_button("📥 DOCX", create_docx(improved), "rss_job_resume.docx")
-                st.download_button("📥 PDF", create_pdf(improved), "rss_job_resume.pdf")
-            else:
-                st.error(improved)
-
-elif menu == "🔥 Аудит":
-    st.markdown('<p class="main-header">🔥 Аудит резюме</p>', unsafe_allow_html=True)
-    if user_data["resume_original"]:
-        if st.button("Запустить аудит"):
-            with st.spinner("Анализируем..."):
-                result = ai_roast(user_data["resume_original"])
-            st.write(result)
-    else:
-        st.warning("Сначала загрузите резюме")
-
-elif menu == "✉️ Письмо":
-    st.markdown('<p class="main-header">✉️ Сопроводительное письмо</p>', unsafe_allow_html=True)
+def tool_cover_letter():
+    st.markdown("### ✉️ Сопроводительное письмо")
     job_desc = st.text_area("Описание вакансии")
     if st.button("Сгенерировать"):
         if user_data["resume_original"] and job_desc:
@@ -270,16 +282,13 @@ elif menu == "✉️ Письмо":
         else:
             st.warning("Нужны резюме и описание вакансии")
 
-elif menu == "✅ Чек-лист":
-    st.markdown('<p class="main-header">✅ Чек-лист перед откликом</p>', unsafe_allow_html=True)
+def tool_checklist():
     st.write(ai_checklist())
 
-elif menu == "🔗 LinkedIn аудит":
-    st.markdown('<p class="main-header">🔗 Аудит LinkedIn профиля</p>', unsafe_allow_html=True)
+def tool_linkedin_audit():
     st.write(ai_linkedin_audit())
 
-elif menu == "🏆 Достижения":
-    st.markdown('<p class="main-header">🏆 Мои достижения</p>', unsafe_allow_html=True)
+def tool_achievements():
     if user_data["resume_original"]:
         if st.button("Проанализировать достижения"):
             with st.spinner("..."):
@@ -288,14 +297,75 @@ elif menu == "🏆 Достижения":
     else:
         st.warning("Нужно резюме")
 
-elif menu == "📊 Рынок":
-    st.markdown('<p class="main-header">📊 Аналитика рынка</p>', unsafe_allow_html=True)
+def tool_market():
     st.write(ai_market())
 
-elif menu == "📡 Радары":
-    st.markdown('<p class="main-header">📡 Радары вакансий</p>', unsafe_allow_html=True)
+def tool_radars():
     st.write(ai_radars())
 
-elif menu == "⚙️ Настройки":
-    st.markdown('<p class="main-header">⚙️ Настройки аккаунта</p>', unsafe_allow_html=True)
-    st.write("Здесь будут настройки профиля, уведомлений и т.д.")
+def tool_settings():
+    st.write("⚙️ Настройки (в разработке)")
+
+# ---------- Главная: карточки инструментов ----------
+def home_page():
+    st.markdown('<h1 class="main-header">Инструменты RSS Job</h1>', unsafe_allow_html=True)
+    tools = [
+        ("📄 Резюме", "Загрузка и AI-улучшение"),
+        ("🔥 Аудит", "Оценка резюме по 5 критериям"),
+        ("🔍 Вакансии", "Поиск на hh.ru"),
+        ("📨 Отклики", "Очередь откликов"),
+        ("✉️ Письмо", "Генерация сопроводительного"),
+        ("✅ Чек-лист", "Что проверить перед откликом"),
+        ("🔗 LinkedIn", "Аудит профиля"),
+        ("🏆 Достижения", "Анализ достижений"),
+        ("📊 Рынок", "Аналитика зарплат"),
+        ("📡 Радары", "Мониторинг вакансий"),
+        ("⚙️ Настройки", "Управление аккаунтом"),
+    ]
+    # Размещаем карточки в 3 колонки
+    cols = st.columns(3)
+    for i, (name, desc) in enumerate(tools):
+        with cols[i % 3]:
+            # Карточка как кнопка
+            card_html = f"""
+            <div class="tool-card" onclick="var r = window.location.href; window.location.href = r + '&tool={name.split(' ')[0]}';">
+                <h3>{name}</h3>
+                <p>{desc}</p>
+            </div>
+            """
+            st.markdown(card_html, unsafe_allow_html=True)
+            # Также обработчик клика через st.button (более надёжно)
+            if st.button(name, key=f"tool_{i}"):
+                user_data["page"] = name.split(" ")[0]
+                st.rerun()
+
+# ---------- Боковая панель ----------
+with st.sidebar:
+    st.markdown("## 🚀 RSS Job")
+    st.caption(f"🆔 ...{session_id[-8:]}")
+    st.metric("👥 Уникальных IP", len(visitors))
+    if st.button("🏠 Главная"):
+        user_data["page"] = "home"
+        st.rerun()
+
+# ---------- Роутинг ----------
+page = user_data.get("page", "home")
+if page == "home":
+    home_page()
+else:
+    # Маппинг страниц
+    pages = {
+        "📄": lambda: show_tool_page("📄 Резюме", tool_resume),
+        "🔥": lambda: show_tool_page("🔥 Аудит резюме", tool_audit),
+        "🔍": lambda: show_tool_page("🔍 Поиск вакансий", tool_vacancies),
+        "📨": lambda: show_tool_page("📨 Мои отклики", tool_applications),
+        "✉️": lambda: show_tool_page("✉️ Сопроводительное письмо", tool_cover_letter),
+        "✅": lambda: show_tool_page("✅ Чек-лист", tool_checklist),
+        "🔗": lambda: show_tool_page("🔗 LinkedIn аудит", tool_linkedin_audit),
+        "🏆": lambda: show_tool_page("🏆 Достижения", tool_achievements),
+        "📊": lambda: show_tool_page("📊 Рынок", tool_market),
+        "📡": lambda: show_tool_page("📡 Радары", tool_radars),
+        "⚙️": lambda: show_tool_page("⚙️ Настройки", tool_settings),
+    }
+    # Если нажали на карточку, page будет содержать эмодзи (например "📄")
+    pages.get(page, lambda: home_page())()
