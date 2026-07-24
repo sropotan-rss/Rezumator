@@ -1,38 +1,36 @@
 import streamlit as st
-import fitz  # PyMuPDF
-import docx
-import openai
 import requests
 import time
 import json
+import os
 from io import BytesIO
+from PyPDF2 import PdfReader
+import docx
+import openai
 
 # ------------------------------------------------------------
 # Настройка страницы
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-# Загрузка ключа OpenAI из переменной окружения
-openai.api_key = st.secrets.get("OPENAI_API_KEY", None) or open("no_key", "a")  # fallback
-import os
+# Загрузка ключа OpenAI
 openai.api_key = os.getenv("OPENAI_API_KEY")
 if not openai.api_key:
-    st.error("❌ Не найден API-ключ OpenAI. Пожалуйста, добавь его в файл .env и перезапусти Docker.")
+    st.error("❌ Не найден API-ключ OpenAI. Добавь его в Secrets на Streamlit Cloud (OPENAI_API_KEY).")
     st.stop()
 
 # ------------------------------------------------------------
-# Функции для извлечения текста из файлов
+# Функции извлечения текста
 def extract_text_from_pdf(file_bytes):
-    import pdfplumber
+    pdf = PdfReader(BytesIO(file_bytes))
+    text = ""
+    for page in pdf.pages:
+        text += page.extract_text() + "\n"
+    return text
 
-def extract_text_from_pdf(file_bytes):
-    with pdfplumber.open(BytesIO(file_bytes)) as pdf:
-        text = ""
-        for page in pdf.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
+def extract_text_from_docx(file_bytes):
+    doc = docx.Document(BytesIO(file_bytes))
+    return "\n".join([p.text for p in doc.paragraphs])
 
 # ------------------------------------------------------------
 # AI-функции
@@ -84,7 +82,7 @@ def search_hh_vacancies(text, area=113, per_page=10):
     url = "https://api.hh.ru/vacancies"
     params = {
         "text": text,
-        "area": area,        # 113 - Россия
+        "area": area,
         "per_page": per_page,
         "page": 0,
         "only_with_salary": False
@@ -98,7 +96,7 @@ def search_hh_vacancies(text, area=113, per_page=10):
         return []
 
 # ------------------------------------------------------------
-# Интерфейс Streamlit
+# Интерфейс
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
 # --- Вкладка Резюме ---
@@ -154,7 +152,6 @@ with tab2:
                     with st.expander(f"{title} — {employer}"):
                         st.write(f"**Описание:** {desc[:300]}...")
                         st.markdown(f"[Открыть вакансию на hh.ru]({url})", unsafe_allow_html=True)
-                        # Сохраним описание в сессию для анализа
                         if st.button(f"Анализировать эту вакансию", key=vac["id"]):
                             st.session_state["selected_vacancy"] = {
                                 "title": title,
@@ -169,10 +166,8 @@ with tab2:
 # --- Вкладка Анализ ---
 with tab3:
     st.header("Сравнение резюме с вакансией и генерация письма")
-    if "resume_text" not in st.session_state and resume_text:
-        st.session_state["resume_text"] = resume_text
     if "selected_vacancy" not in st.session_state:
-        st.info("Перейдите на вкладку 'Вакансии' и нажмите 'Анализировать эту вакансию' под интересующей вакансией.")
+        st.info("Перейдите на вкладку 'Вакансии' и нажмите 'Анализировать эту вакансию'.")
     else:
         vac = st.session_state["selected_vacancy"]
         st.subheader(f"Вакансия: {vac['title']}")
