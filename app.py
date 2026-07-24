@@ -14,7 +14,7 @@ if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-MODEL = "llama-3.2-3b-preview"   # быстрая, бесплатная, понимает русский
+MODEL = "llama-3.1-8b-instant"   # бесплатная, активная, отлично понимает русский
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
