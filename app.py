@@ -9,28 +9,31 @@ import docx
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
-API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
-if not ACCOUNT_ID or not API_TOKEN:
-    st.error("❌ Добавь в Secrets CLOUDFLARE_ACCOUNT_ID и CLOUDFLARE_API_TOKEN")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-MODEL = "@cf/qwen/qwen1.5-7b-chat"  # понимает русский, бесплатно
-API_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}"
+MODEL = "llama-3.2-3b-preview"   # быстрая, бесплатная, понимает русский
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
-    headers = {"Authorization": f"Bearer {API_TOKEN}"}
-    payload = {"prompt": prompt, "max_tokens": 800, "temperature": 0.7}
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+        "max_tokens": 800
+    }
     try:
-        r = requests.post(API_URL, headers=headers, json=payload, timeout=60)
+        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
         if r.status_code == 200:
-            data = r.json()
-            if data.get("success"):
-                return data["result"]["response"]
-            else:
-                return f"[Ошибка Cloudflare] {data.get('errors', data)}"
+            return r.json()["choices"][0]["message"]["content"]
         else:
-            return f"[Ошибка {r.status_code}] {r.text}"
+            return f"[Ошибка Groq {r.status_code}] {r.text}"
     except Exception as e:
         return f"[Сетевая ошибка] {e}"
 
@@ -60,14 +63,13 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
     if raw.startswith("[Ошибка") or raw.startswith("[Сетевая"):
         return {"rewritten": raw, "changes_summary": []}
     try:
-        # Пытаемся извлечь JSON из ответа
         if "{" in raw:
             start = raw.find('{')
             end = raw.rfind('}') + 1
             return json.loads(raw[start:end])
     except:
         pass
-    return {"rewritten": raw, "changes_summary": ["Ответ не в JSON, показан сырой текст."]}
+    return {"rewritten": raw, "changes_summary": ["Ответ не в JSON."]}
 
 def ai_analyze_match(resume_text, job_description):
     prompt = f"""Проанализируй соответствие резюме и вакансии. Оцени по шкале 0-100.
@@ -111,7 +113,7 @@ def search_hh_vacancies(text, area=113, per_page=10):
         st.error("Ошибка при запросе к hh.ru")
         return []
 
-# Интерфейс
+# Интерфейс (без изменений)
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
 with tab1:
@@ -126,7 +128,7 @@ with tab1:
             resume_text = extract_text_from_docx(file_bytes)
         else:
             resume_text = file_bytes.decode("utf-8")
-        st.success("Резюме загружено! Вот текст:")
+        st.success("Резюме загружено!")
         st.text_area("Содержимое резюме", resume_text, height=250)
 
     st.header("Шаг 2: Улучши резюме с ИИ")
@@ -137,7 +139,7 @@ with tab1:
         if not resume_text:
             st.warning("Сначала загрузите резюме.")
         else:
-            with st.spinner("ИИ работает (до 15 сек)..."):
+            with st.spinner("ИИ работает..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
             st.subheader("📝 Улучшенное резюме")
             st.text_area("Новый текст", result["rewritten"], height=300)
@@ -147,12 +149,12 @@ with tab1:
 
 with tab2:
     st.header("Поиск вакансий на hh.ru")
-    search_query = st.text_input("Ключевые слова (например: Python developer)")
+    search_query = st.text_input("Ключевые слова")
     area = st.selectbox("Регион", [("Россия", 113), ("Москва", 1), ("Санкт-Петербург", 2)],
                          format_func=lambda x: x[0])
     if st.button("Искать вакансии"):
         if search_query:
-            with st.spinner("Ищем на hh.ru..."):
+            with st.spinner("Ищем..."):
                 vacancies = search_hh_vacancies(search_query, area=area[1])
             if vacancies:
                 st.success(f"Найдено {len(vacancies)} вакансий")
@@ -163,9 +165,9 @@ with tab2:
                     snippet = vac.get("snippet", {})
                     desc = snippet.get("requirement", "") + " " + snippet.get("responsibility", "")
                     with st.expander(f"{title} — {employer}"):
-                        st.write(f"**Описание:** {desc[:300]}...")
-                        st.markdown(f"[Открыть вакансию на hh.ru]({url})", unsafe_allow_html=True)
-                        if st.button(f"Анализировать эту вакансию", key=vac["id"]):
+                        st.write(f"Описание: {desc[:300]}...")
+                        st.markdown(f"[Открыть на hh.ru]({url})")
+                        if st.button("Анализировать", key=vac["id"]):
                             st.session_state["selected_vacancy"] = {
                                 "title": title,
                                 "description": desc,
@@ -177,16 +179,15 @@ with tab2:
             st.warning("Введите ключевые слова")
 
 with tab3:
-    st.header("Сравнение резюме с вакансией и генерация письма")
+    st.header("Сравнение резюме с вакансией")
     if "selected_vacancy" not in st.session_state:
-        st.info("Перейдите на вкладку 'Вакансии' и нажмите 'Анализировать эту вакансию'.")
+        st.info("Сначала выберите вакансию на вкладке 'Вакансии'.")
     else:
         vac = st.session_state["selected_vacancy"]
         st.subheader(f"Вакансия: {vac['title']}")
-        st.text_area("Описание вакансии", vac["description"][:1000], height=150)
-        current_resume = st.text_area("Текущее резюме (можно отредактировать)", 
-                                      st.session_state.get("resume_text", ""), height=200)
-        if st.button("📈 Проанализировать и сгенерировать письмо"):
+        st.text_area("Описание", vac["description"][:1000], height=150)
+        current_resume = st.text_area("Текущее резюме", st.session_state.get("resume_text", ""), height=200)
+        if st.button("📈 Анализировать"):
             if not current_resume:
                 st.warning("Введите текст резюме.")
             else:
@@ -201,4 +202,4 @@ with tab3:
                 st.subheader("💡 Рекомендации")
                 for tip in analysis.get("tips", []):
                     st.write(f"- {tip}")
-                st.markdown(f"[👉 Откликнуться на hh.ru]({vac['url']})", unsafe_allow_html=True)
+                st.markdown(f"[👉 Откликнуться на hh.ru]({vac['url']})")
