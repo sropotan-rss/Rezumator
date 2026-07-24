@@ -2,9 +2,11 @@ import streamlit as st
 import requests
 import json
 import os
+import tempfile
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
+from fpdf import FPDF
 import textwrap
 import datetime
 import time
@@ -18,6 +20,23 @@ if not GROQ_API_KEY:
 
 MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# ---------- Загрузка шрифта (с кэшированием) ----------
+@st.cache_resource
+def get_font_path():
+    """Загружает DejaVuSans.ttf один раз за сессию."""
+    url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
+    try:
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
+        tmp.write(r.content)
+        tmp.close()
+        return tmp.name
+    except Exception:
+        return None
+
+FONT_PATH = get_font_path()
 
 # ---------- CSS ----------
 st.markdown("""
@@ -132,9 +151,23 @@ def create_docx(text):
     buf.seek(0)
     return buf
 
-# PDF теперь создаётся как простой текстовый файл (без встроенных шрифтов)
-def create_pdf_text(text):
-    return BytesIO(text.encode('utf-8'))
+def create_pdf(text):
+    """Создаёт PDF с поддержкой кириллицы (если шрифт загрузился)."""
+    if not FONT_PATH:
+        # fallback: сохраняем как текст
+        return BytesIO(text.encode('utf-8'))
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
+    pdf.set_font('DejaVu', '', 12)
+    for line in text.split('\n'):
+        wrapped = textwrap.wrap(line, width=80)
+        for wline in wrapped:
+            pdf.cell(0, 8, wline, ln=True)
+    buf = BytesIO()
+    pdf.output(buf)
+    buf.seek(0)
+    return buf
 
 # ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
 def main():
@@ -238,7 +271,8 @@ def main():
                     user_data["resume_improved"] = res["rewritten"]
                     st.success("Улучшено!")
                     st.download_button("📥 DOCX", create_docx(res["rewritten"]), "rezumator.docx")
-                    st.download_button("📥 PDF (текстовый)", create_pdf_text(res["rewritten"]), "rezumator.pdf")
+                    pdf = create_pdf(res["rewritten"])
+                    st.download_button("📥 PDF", pdf, "rezumator.pdf", mime="application/pdf")
                 else:
                     st.error(res["rewritten"])
         if st.button("🔍 Аудит резюме"):
