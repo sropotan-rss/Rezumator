@@ -13,17 +13,24 @@ import textwrap
 import datetime
 import time
 
+# ---------- КОНФИГУРАЦИЯ ----------
 st.set_page_config(page_title="RSS job", layout="wide")
 
+# --- API-ключи ---
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 YANDEX_CLIENT_ID = os.getenv("YANDEX_CLIENT_ID")
 YANDEX_CLIENT_SECRET = os.getenv("YANDEX_CLIENT_SECRET")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GROQ_API_KEY:
-    st.error("❌ Добавь GROQ_API_KEY в Secrets")
+    st.error("❌ Добавь GROQ_API_KEY в Secrets (обязательно)")
     st.stop()
 
-# ---------- Шрифт для PDF ----------
+# --- Твой Streamlit-домен (замени, если изменится) ---
+APP_DOMAIN = "https://rezumator-rm6vevs9pf5zus5bdggrjk.streamlit.app"
+
+# --- Шрифт для PDF ---
 @st.cache_resource
 def get_font_path():
     url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
@@ -38,7 +45,7 @@ def get_font_path():
         return None
 FONT_PATH = get_font_path()
 
-# ---------- CSS ----------
+# --- Стили ---
 st.markdown("""
 <style>
     .main { background-color: #f8fafc; }
@@ -68,7 +75,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Сессия ----------
+# --- Сессия ---
 if "user" not in st.session_state:
     st.session_state.user = None
 if "auth_provider" not in st.session_state:
@@ -78,13 +85,13 @@ if "users" not in st.session_state:
 if "oauth_state" not in st.session_state:
     st.session_state.oauth_state = None
 
-# ---------- Яндекс OAuth ----------
+# --- Яндекс OAuth (исправленный redirect_uri) ---
 def yandex_login():
     if not YANDEX_CLIENT_ID:
         return
     state = sec.token_urlsafe(16)
     st.session_state.oauth_state = state
-    redirect_uri = f"{st.get_option('server.baseUrlPath')}/oauth_callback"
+    redirect_uri = f"{APP_DOMAIN}/oauth_callback"   # <-- ЯВНЫЙ URL
     params = {
         "response_type": "code",
         "client_id": YANDEX_CLIENT_ID,
@@ -126,7 +133,7 @@ def handle_yandex_callback():
     elif code:
         st.error("Ошибка проверки state")
 
-# ---------- Локальная авторизация ----------
+# --- Локальная авторизация ---
 def login(email, password):
     users = st.session_state.users
     if email in users and users[email] == password:
@@ -150,28 +157,84 @@ def logout():
     st.session_state.auth_provider = None
     st.rerun()
 
-# ---------- ИИ ----------
-def ask_ai(prompt, max_tokens=2500, retries=3):
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
-    last_err = ""
-    for attempt in range(retries):
-        try:
-            r = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=90)
-            if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"]
-            elif r.status_code == 429:
-                last_err = f"Лимит запросов (429). Попытка {attempt+1}/{retries}"
-                time.sleep(5)
-            else:
-                last_err = f"Ошибка Groq {r.status_code}: {r.text[:200]}"
-                break
-        except Exception as e:
-            last_err = f"Сетевая ошибка: {e}"
-            time.sleep(2)
-    return f"[ОШИБКА] {last_err}"
+# --- Доступные модели ИИ ---
+AVAILABLE_MODELS = {}
+if GROQ_API_KEY:
+    AVAILABLE_MODELS["Groq (бесплатно)"] = {
+        "provider": "groq",
+        "model": "llama-3.1-8b-instant",
+        "api_key": GROQ_API_KEY,
+        "base_url": "https://api.groq.com/openai/v1/chat/completions"
+    }
+if OPENAI_API_KEY:
+    AVAILABLE_MODELS["OpenAI (платно)"] = {
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "api_key": OPENAI_API_KEY,
+        "base_url": "https://api.openai.com/v1/chat/completions"
+    }
+if GEMINI_API_KEY:
+    AVAILABLE_MODELS["Gemini (бесплатно)"] = {
+        "provider": "gemini",
+        "model": "gemini-2.0-flash",
+        "api_key": GEMINI_API_KEY,
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    }
 
-# ---------- Обработчики файлов ----------
+# --- Универсальная функция запроса к ИИ ---
+def ask_ai(prompt, max_tokens=2500, retries=3):
+    if not AVAILABLE_MODELS:
+        return "[ОШИБКА] Нет доступных моделей"
+    selected = st.session_state.get("selected_model", list(AVAILABLE_MODELS.keys())[0])
+    cfg = AVAILABLE_MODELS[selected]
+    provider = cfg["provider"]
+    api_key = cfg["api_key"]
+    model = cfg["model"]
+    base_url = cfg["base_url"]
+
+    if provider in ("groq", "openai"):
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
+        last_err = ""
+        for attempt in range(retries):
+            try:
+                r = requests.post(base_url, headers=headers, json=payload, timeout=90)
+                if r.status_code == 200:
+                    return r.json()["choices"][0]["message"]["content"]
+                elif r.status_code == 429:
+                    last_err = f"Лимит запросов (429). Попытка {attempt+1}/{retries}"
+                    time.sleep(5)
+                else:
+                    last_err = f"Ошибка {provider} {r.status_code}: {r.text[:200]}"
+                    break
+            except Exception as e:
+                last_err = f"Сетевая ошибка: {e}"
+                time.sleep(2)
+        return f"[ОШИБКА] {last_err}"
+
+    elif provider == "gemini":
+        headers = {"Content-Type": "application/json"}
+        payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.7}}
+        last_err = ""
+        for attempt in range(retries):
+            try:
+                r = requests.post(f"{base_url}?key={api_key}", headers=headers, json=payload, timeout=90)
+                if r.status_code == 200:
+                    data = r.json()
+                    return data["candidates"][0]["content"]["parts"][0]["text"]
+                elif r.status_code == 429:
+                    last_err = f"Лимит запросов (429). Попытка {attempt+1}/{retries}"
+                    time.sleep(5)
+                else:
+                    last_err = f"Ошибка Gemini {r.status_code}: {r.text[:200]}"
+                    break
+            except Exception as e:
+                last_err = f"Сетевая ошибка: {e}"
+                time.sleep(2)
+        return f"[ОШИБКА] {last_err}"
+    return "[ОШИБКА] Неизвестный провайдер"
+
+# --- Утилиты файлов ---
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
     return "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -209,7 +272,7 @@ def search_hh_vacancies(text, area=113):
     r = requests.get("https://api.hh.ru/vacancies", params={"text": text, "area": area, "per_page": 10}, headers={"User-Agent": "RSSjob/1.0"})
     return r.json().get("items", []) if r.status_code == 200 else []
 
-# ---------- ИИ-инструменты ----------
+# --- ИИ-функции ---
 def ai_roast(resume_text):
     prompt = f"Проведи аудит резюме по 5 критериям (1-10): оформление, опыт, навыки, образование, ATS. Дай вердикт и советы.\nРезюме: {resume_text[:3000]}"
     return ask_ai(prompt, max_tokens=2000)
@@ -234,12 +297,17 @@ def ai_radars():
 def ai_market():
     return "Рынок: средняя зарплата операционного директора — 270 000 ₽, востребованы навыки управления цепочками поставок."
 
-# ---------- Интерфейс ----------
+# --- Интерфейс ---
 def main():
     user = st.session_state.user
     with st.sidebar:
         st.markdown("## 🚀 RSS job")
         st.markdown(f"👤 {user}")
+        if AVAILABLE_MODELS:
+            model_names = list(AVAILABLE_MODELS.keys())
+            if "selected_model" not in st.session_state:
+                st.session_state.selected_model = model_names[0]
+            st.selectbox("🧠 Модель ИИ", model_names, key="selected_model")
         menu = st.radio("Меню", [
             "🏠 Платформа", "🔍 Вакансии", "📨 Отклики", "📄 Резюме",
             "🔥 Аудит", "✉️ Письмо", "✅ Чек-лист", "🔗 LinkedIn аудит",
@@ -376,7 +444,7 @@ def main():
         st.markdown('<p class="main-header">⚙️ Настройки аккаунта</p>', unsafe_allow_html=True)
         st.write("Здесь будут настройки профиля, уведомлений и т.д.")
 
-# ---------- Экран входа ----------
+# --- Экран входа ---
 def auth_screen():
     st.title("🔐 RSS job")
     if "code" in st.experimental_get_query_params():
@@ -402,6 +470,7 @@ def auth_screen():
             else:
                 st.error("Этот email уже используется")
 
+# --- Запуск ---
 if st.session_state.user:
     main()
 else:
