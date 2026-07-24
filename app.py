@@ -26,7 +26,7 @@ def ask_ai(prompt: str) -> str:
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7,
-        "max_tokens": 800
+        "max_tokens": 1500
     }
     try:
         r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
