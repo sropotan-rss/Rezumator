@@ -21,10 +21,9 @@ if not GROQ_API_KEY:
 MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# ---------- Загрузка шрифта (с кэшированием) ----------
+# ---------- Шрифт ----------
 @st.cache_resource
 def get_font_path():
-    """Загружает DejaVuSans.ttf один раз за сессию."""
     url = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
     try:
         r = requests.get(url, timeout=30)
@@ -41,7 +40,7 @@ FONT_PATH = get_font_path()
 # ---------- CSS ----------
 st.markdown("""
 <style>
-    .main-header { font-size: 2rem; font-weight: 700; color: #1E3A8A; margin-bottom: 0; }
+    .main-header { font-size: 2rem; font-weight: 700; color: #1E3A8A; }
     .stButton>button {
         background-color: #F97316;
         color: white;
@@ -54,7 +53,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Локальная авторизация ----------
+# ---------- Авторизация ----------
 def login(email, password):
     users = st.session_state.get("users", {})
     if email in users and users[email] == password:
@@ -79,18 +78,29 @@ def logout():
 def ask_ai(prompt, max_tokens=2500, retries=3):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
+    last_err = ""
     for attempt in range(retries):
         try:
             r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=90)
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
             elif r.status_code == 429:
+                last_err = f"Лимит запросов (429). Попытка {attempt+1}/{retries}"
                 time.sleep(5)
-                continue
-            return f"[Ошибка Groq {r.status_code}] {r.text}"
-        except Exception:
+            elif r.status_code == 400:
+                err_text = r.text
+                if "context length" in err_text.lower():
+                    return "[ОШИБКА] Резюме слишком длинное. Сократите текст или используйте более краткую версию."
+                else:
+                    last_err = f"Ошибка запроса (400): {err_text[:200]}"
+                break
+            else:
+                last_err = f"Ошибка Groq {r.status_code}: {r.text[:200]}"
+                break
+        except Exception as e:
+            last_err = f"Сетевая ошибка: {e}"
             time.sleep(2)
-    return "[Ошибка]"
+    return f"[ОШИБКА] {last_err}"
 
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
@@ -101,11 +111,16 @@ def extract_text_from_docx(file_bytes):
     return "\n".join(p.text for p in doc.paragraphs)
 
 def ai_rewrite_resume(resume_text, job="", style="professional"):
+    # Безопасная длина: оставляем ~3000 символов
+    if len(resume_text) > 3000:
+        resume_text = resume_text[:3000] + "\n... (текст автоматически сокращён)"
     prompt = f"""Улучши резюме. Стиль: {style}. Язык: русский.
 {f'Вакансия: {job}' if job else ''}
 Резюме: {resume_text}
 JSON: {{"rewritten": "текст", "changes_summary": ["изменение1"]}}"""
-    raw = ask_ai(prompt)
+    raw = ask_ai(prompt, max_tokens=1500)
+    if raw.startswith("[ОШИБКА"):
+        return {"rewritten": raw, "changes_summary": []}
     try:
         if "{" in raw:
             d = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
@@ -115,9 +130,15 @@ JSON: {{"rewritten": "текст", "changes_summary": ["изменение1"]}}"
     return {"rewritten": raw, "changes_summary": []}
 
 def ai_analyze_match(resume_text, job_desc):
+    if len(resume_text) > 2000:
+        resume_text = resume_text[:2000]
+    if len(job_desc) > 1000:
+        job_desc = job_desc[:1000]
     prompt = f"""Оцени соответствие (0-100). Резюме: {resume_text}. Вакансия: {job_desc}
 JSON: {{"score": число, "cover_letter": "письмо", "missing_skills": [], "tips": []}}"""
-    raw = ask_ai(prompt, max_tokens=1000)
+    raw = ask_ai(prompt, max_tokens=800)
+    if raw.startswith("[ОШИБКА"):
+        return {"score": 0, "cover_letter": raw, "missing_skills": [], "tips": []}
     try:
         if "{" in raw:
             return json.loads(raw[raw.find("{"):raw.rfind("}")+1])
@@ -126,10 +147,14 @@ JSON: {{"score": число, "cover_letter": "письмо", "missing_skills": [
     return {"score": 0, "cover_letter": raw[:500], "missing_skills": [], "tips": []}
 
 def ai_audit_resume(resume_text):
+    if len(resume_text) > 3000:
+        resume_text = resume_text[:3000]
     prompt = f"""Аудит резюме по 5 критериям (1-10).
 Резюме: {resume_text}
 JSON: {{"verdict": "...", "sections": [{{"name": "...", "score": N, "comment": "..."}}], "overall_score": N, "top_3_strengths": [...], "top_3_weaknesses": [...], "action_plan": [...], "keywords_to_add": [...]}}"""
-    raw = ask_ai(prompt, max_tokens=3000)
+    raw = ask_ai(prompt, max_tokens=2000)
+    if raw.startswith("[ОШИБКА"):
+        return {"verdict": raw, "sections": [], "overall_score": 0, "top_3_strengths": [], "top_3_weaknesses": [], "action_plan": [], "keywords_to_add": []}
     try:
         if "{" in raw:
             return json.loads(raw[raw.find("{"):raw.rfind("}")+1])
@@ -152,24 +177,21 @@ def create_docx(text):
     return buf
 
 def create_pdf(text):
-    """Создаёт PDF с поддержкой кириллицы (если шрифт загрузился)."""
     if not FONT_PATH:
-        # fallback: сохраняем как текст
         return BytesIO(text.encode('utf-8'))
     pdf = FPDF()
     pdf.add_page()
     pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
     pdf.set_font('DejaVu', '', 12)
     for line in text.split('\n'):
-        wrapped = textwrap.wrap(line, width=80)
-        for wline in wrapped:
+        for wline in textwrap.wrap(line, width=80):
             pdf.cell(0, 8, wline, ln=True)
     buf = BytesIO()
     pdf.output(buf)
     buf.seek(0)
     return buf
 
-# ---------- ОСНОВНОЙ ИНТЕРФЕЙС ----------
+# ---------- ИНТЕРФЕЙС ----------
 def main():
     user = st.session_state.user
     st.sidebar.markdown(f"👤 {user}")
@@ -267,21 +289,23 @@ def main():
             else:
                 with st.spinner("ИИ работает..."):
                     res = ai_rewrite_resume(user_data["resume_original"])
-                if not res["rewritten"].startswith("[Ошибка"):
+                if res["rewritten"].startswith("[ОШИБКА"):
+                    st.error(res["rewritten"])
+                else:
                     user_data["resume_improved"] = res["rewritten"]
                     st.success("Улучшено!")
                     st.download_button("📥 DOCX", create_docx(res["rewritten"]), "rezumator.docx")
                     pdf = create_pdf(res["rewritten"])
                     st.download_button("📥 PDF", pdf, "rezumator.pdf", mime="application/pdf")
-                else:
-                    st.error(res["rewritten"])
         if st.button("🔍 Аудит резюме"):
             if not user_data["resume_original"]:
                 st.warning("Нет резюме")
             else:
                 with st.spinner("Аудит..."):
                     audit = ai_audit_resume(user_data["resume_original"])
-                if not audit["verdict"].startswith("[Ошибка"):
+                if audit["verdict"].startswith("[ОШИБКА"):
+                    st.error(audit["verdict"])
+                else:
                     st.write(audit["verdict"])
                     st.progress(audit["overall_score"]/10)
                     for sec in audit.get("sections", []):
@@ -290,13 +314,9 @@ def main():
                         cols[1].caption(sec.get("comment", ""))
                     c1, c2 = st.columns(2)
                     c1.subheader("Сильные стороны")
-                    for s in audit["top_3_strengths"]:
-                        c1.write(f"- {s}")
+                    for s in audit["top_3_strengths"]: c1.write(f"- {s}")
                     c2.subheader("Слабые стороны")
-                    for w in audit["top_3_weaknesses"]:
-                        c2.write(f"- {w}")
-                else:
-                    st.error(audit["verdict"])
+                    for w in audit["top_3_weaknesses"]: c2.write(f"- {w}")
 
     elif menu == "📊 Анализ":
         st.header("Анализ вакансий")
