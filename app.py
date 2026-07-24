@@ -15,7 +15,7 @@ if not API_KEY:
     st.error("❌ Не найден ключ OpenRouter. Добавь его в Secrets (OPENROUTER_API_KEY).")
     st.stop()
 
-MODEL = "google/gemma-2-2b-it"
+MODEL = "mistralai/mistral-7b-instruct:free"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
