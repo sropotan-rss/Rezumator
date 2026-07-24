@@ -34,20 +34,34 @@ def get_font_path():
         return None
 FONT_PATH = get_font_path()
 
-# ---------- CSS ----------
+# ---------- CSS (тёмная тема Сопровод) ----------
 st.markdown("""
 <style>
-    /* Общий фон */
-    .stApp { background: linear-gradient(135deg, #1E3A8A 0%, #3B82F6 100%); }
-    /* Карточки */
-    .tool-card {
-        background: white;
-        border-radius: 16px;
-        padding: 2rem;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-        cursor: pointer;
+    @import url('https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap');
+    html, body, [class*="css"] {
+        font-family: 'Onest', sans-serif;
+    }
+    .stApp {
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    }
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
         text-align: center;
+        margin-bottom: 2rem;
+        background: linear-gradient(to right, #38bdf8, #818cf8, #c084fc);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .tool-card {
+        background: rgba(30, 41, 59, 0.6);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        padding: 2rem;
+        text-align: center;
+        transition: transform 0.2s, box-shadow 0.2s;
+        cursor: pointer;
         height: 200px;
         display: flex;
         flex-direction: column;
@@ -56,24 +70,35 @@ st.markdown("""
     }
     .tool-card:hover {
         transform: translateY(-5px) scale(1.02);
-        box-shadow: 0 10px 20px rgba(0,0,0,0.15);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+        border-color: rgba(56, 189, 248, 0.3);
     }
-    .tool-card h3 { color: #1E3A8A; margin: 0; font-size: 1.5rem; }
-    .tool-card p { color: #64748B; margin: 0.5rem 0 0; }
-    /* Заголовки */
-    .main-header { color: white; font-size: 2.5rem; font-weight: 700; text-align: center; margin-bottom: 2rem; }
-    /* Кнопки */
+    .tool-card h3 {
+        color: #f1f5f9;
+        margin: 0;
+        font-size: 1.3rem;
+    }
+    .tool-card p {
+        color: #94a3b8;
+        margin: 0.5rem 0 0;
+    }
     .stButton>button {
-        background-color: #F97316;
+        background: linear-gradient(135deg, #38bdf8, #818cf8);
         color: white;
-        border-radius: 8px;
+        border-radius: 12px;
         font-weight: 600;
         border: none;
         padding: 0.5rem 1.5rem;
     }
-    .stButton>button:hover { background-color: #EA580C; }
-    /* Сайдбар */
-    section[data-testid="stSidebar"] { background: white; border-right: 1px solid #E2E8F0; }
+    .stButton>button:hover {
+        background: linear-gradient(135deg, #0ea5e9, #6366f1);
+        transform: scale(1.02);
+    }
+    section[data-testid="stSidebar"] {
+        background: rgba(15, 23, 42, 0.9);
+        backdrop-filter: blur(10px);
+        border-right: 1px solid rgba(255,255,255,0.1);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -190,9 +215,8 @@ def ai_radars():
 def ai_market():
     return "📊 Средняя зарплата COO — 270 000 ₽"
 
-# ---------- СТРАНИЦЫ ----------
+# ---------- Страницы инструментов ----------
 def show_tool_page(title, func, *args, **kwargs):
-    """Обёртка для отображения страницы инструмента с кнопкой 'Назад'."""
     st.markdown(f'<h1 class="main-header">{title}</h1>', unsafe_allow_html=True)
     if st.button("← Назад ко всем инструментам"):
         user_data["page"] = "home"
@@ -322,19 +346,16 @@ def home_page():
         ("📡 Радары", "Мониторинг вакансий"),
         ("⚙️ Настройки", "Управление аккаунтом"),
     ]
-    # Размещаем карточки в 3 колонки
     cols = st.columns(3)
     for i, (name, desc) in enumerate(tools):
         with cols[i % 3]:
-            # Карточка как кнопка
             card_html = f"""
-            <div class="tool-card" onclick="var r = window.location.href; window.location.href = r + '&tool={name.split(' ')[0]}';">
+            <div class="tool-card">
                 <h3>{name}</h3>
                 <p>{desc}</p>
             </div>
             """
             st.markdown(card_html, unsafe_allow_html=True)
-            # Также обработчик клика через st.button (более надёжно)
             if st.button(name, key=f"tool_{i}"):
                 user_data["page"] = name.split(" ")[0]
                 st.rerun()
@@ -353,7 +374,6 @@ page = user_data.get("page", "home")
 if page == "home":
     home_page()
 else:
-    # Маппинг страниц
     pages = {
         "📄": lambda: show_tool_page("📄 Резюме", tool_resume),
         "🔥": lambda: show_tool_page("🔥 Аудит резюме", tool_audit),
@@ -367,5 +387,4 @@ else:
         "📡": lambda: show_tool_page("📡 Радары", tool_radars),
         "⚙️": lambda: show_tool_page("⚙️ Настройки", tool_settings),
     }
-    # Если нажали на карточку, page будет содержать эмодзи (например "📄")
     pages.get(page, lambda: home_page())()
