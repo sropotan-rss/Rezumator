@@ -5,75 +5,34 @@ import os
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
-import time
 
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    st.error("❌ Не найден токен Hugging Face. Добавь его в Secrets (HF_TOKEN).")
+ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN")
+if not ACCOUNT_ID or not API_TOKEN:
+    st.error("❌ Добавь в Secrets CLOUDFLARE_ACCOUNT_ID и CLOUDFLARE_API_TOKEN")
     st.stop()
 
-# Список моделей для автоперебора (проверенные бесплатные русскоязычные)
-MODELS = [
-    "mistralai/Mistral-7B-Instruct-v0.2",
-    "google/flan-t5-large",
-    "facebook/bart-large-mnli",
-    "openchat/openchat-3.5-0106"
-]
-# Резервный вариант – использовать OpenRouter (платный, но дешёвый, если HF не работает)
-OPENROUTER_FALLBACK = False  # можешь включить, добавив OPENROUTER_API_KEY в Secrets
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MODEL = "@cf/qwen/qwen1.5-7b-chat"  # понимает русский, бесплатно
+API_URL = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/{MODEL}"
 
 def ask_ai(prompt: str) -> str:
-    """Отправляет запрос к Hugging Face, при неудаче пробует другие модели."""
-    for model in MODELS:
-        try:
-            response = requests.post(
-                f"https://api-inference.huggingface.co/models/{model}",
-                headers={"Authorization": f"Bearer {HF_TOKEN}"},
-                json={"inputs": prompt, "parameters": {"max_new_tokens": 800, "temperature": 0.7}},
-                timeout=30
-            )
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list) and len(data) > 0:
-                    return data[0]["generated_text"]
-                elif isinstance(data, dict) and "generated_text" in data:
-                    return data["generated_text"]
-                else:
-                    return str(data)
-            # Если модель загружается – ждём 5 секунд и пробуем ещё раз
-            elif response.status_code == 503 and "loading" in response.text.lower():
-                time.sleep(5)
-                continue
-        except Exception:
-            continue
-    # Если ни одна модель HF не сработала, используем OpenRouter (если есть ключ)
-    if OPENROUTER_FALLBACK and OPENROUTER_API_KEY:
-        return ask_ai_openrouter(prompt)
-    return "[Ошибка] Все модели временно недоступны. Попробуйте позже."
-
-def ask_ai_openrouter(prompt: str) -> str:
+    headers = {"Authorization": f"Bearer {API_TOKEN}"}
+    payload = {"prompt": prompt, "max_tokens": 800, "temperature": 0.7}
     try:
-        r = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}"},
-            json={
-                "model": "google/gemma-2-2b-it",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "max_tokens": 800
-            },
-            timeout=30
-        )
+        r = requests.post(API_URL, headers=headers, json=payload, timeout=60)
         if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
+            data = r.json()
+            if data.get("success"):
+                return data["result"]["response"]
+            else:
+                return f"[Ошибка Cloudflare] {data.get('errors', data)}"
         else:
-            return f"[Ошибка OpenRouter: {r.status_code}] {r.text}"
+            return f"[Ошибка {r.status_code}] {r.text}"
     except Exception as e:
-        return f"[Ошибка OpenRouter] {e}"
+        return f"[Сетевая ошибка] {e}"
 
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
@@ -98,12 +57,13 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 - changes_summary: список сделанных изменений
 """
     raw = ask_ai(prompt)
-    if raw.startswith("[Ошибка"):
+    if raw.startswith("[Ошибка") or raw.startswith("[Сетевая"):
         return {"rewritten": raw, "changes_summary": []}
     try:
-        start = raw.find('{')
-        end = raw.rfind('}') + 1
-        if start != -1 and end != 0:
+        # Пытаемся извлечь JSON из ответа
+        if "{" in raw:
+            start = raw.find('{')
+            end = raw.rfind('}') + 1
             return json.loads(raw[start:end])
     except:
         pass
@@ -123,12 +83,12 @@ def ai_analyze_match(resume_text, job_description):
 - tips: советы по улучшению резюме
 """
     raw = ask_ai(prompt)
-    if raw.startswith("[Ошибка"):
+    if raw.startswith("[Ошибка") or raw.startswith("[Сетевая"):
         return {"score": 0, "cover_letter": raw, "missing_skills": [], "tips": []}
     try:
-        start = raw.find('{')
-        end = raw.rfind('}') + 1
-        if start != -1 and end != 0:
+        if "{" in raw:
+            start = raw.find('{')
+            end = raw.rfind('}') + 1
             return json.loads(raw[start:end])
     except:
         pass
@@ -177,7 +137,7 @@ with tab1:
         if not resume_text:
             st.warning("Сначала загрузите резюме.")
         else:
-            with st.spinner("ИИ работает (до 30 сек)..."):
+            with st.spinner("ИИ работает (до 15 сек)..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
             st.subheader("📝 Улучшенное резюме")
             st.text_area("Новый текст", result["rewritten"], height=300)
