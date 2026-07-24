@@ -9,7 +9,6 @@ import docx
 from fpdf import FPDF
 import textwrap
 import datetime
-import time
 
 st.set_page_config(page_title="Rezumator Pro", layout="wide")
 st.title("🚀 Rezumator Pro — умный автопилот")
@@ -59,22 +58,13 @@ if "applications" not in st.session_state:
 
 # ========== ИИ-ФУНКЦИИ ==========
 def ask_ai(prompt, max_tokens=2500):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-        "max_tokens": max_tokens
-    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {"model": MODEL, "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
     try:
         r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=90)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-        else:
-            return f"[Ошибка Groq {r.status_code}] {r.text}"
+        return f"[Ошибка Groq {r.status_code}] {r.text}"
     except Exception as e:
         return f"[Сетевая ошибка] {e}"
 
@@ -94,7 +84,7 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 {resume_text}
 
 Верни ТОЛЬКО JSON с полями:
-- rewritten: полный улучшенный текст
+- rewritten: полный улучшенный текст (строка)
 - changes_summary: список сделанных изменений
 """
     raw = ask_ai(prompt)
@@ -102,10 +92,17 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
         if "{" in raw:
             start = raw.find('{')
             end = raw.rfind('}') + 1
-            return json.loads(raw[start:end])
+            data = json.loads(raw[start:end])
+            rewritten = data.get("rewritten", raw)
+            if isinstance(rewritten, (dict, list)):
+                rewritten = json.dumps(rewritten, ensure_ascii=False, indent=2)
+            return {
+                "rewritten": rewritten,
+                "changes_summary": data.get("changes_summary", [])
+            }
     except:
         pass
-    return {"rewritten": raw, "changes_summary": ["Ответ не в JSON."]}
+    return {"rewritten": raw, "changes_summary": []}
 
 def ai_analyze_match(resume_text, job_description):
     prompt = f"""Проанализируй соответствие резюме и вакансии. Оцени по шкале 0-100.
@@ -127,30 +124,29 @@ def ai_analyze_match(resume_text, job_description):
         pass
     return {"score": 0, "cover_letter": raw[:500], "missing_skills": [], "tips": []}
 
-def ai_roast_resume_v2(resume_text):
-    """Расширенный анализ по 5 разделам с оценками."""
-    prompt = f"""Ты — самый строгий HR-эксперт. Проведи полный разбор резюме по 5 критериям, каждый оцени по шкале 1-10.
+def ai_audit_resume(resume_text):
+    """Экспертный аудит резюме по 5 разделам с оценками."""
+    prompt = f"""Ты — самый строгий HR-эксперт. Проведи полный аудит резюме по 5 критериям, каждый оцени по шкале 1-10.
 Резюме: {resume_text}
 
 Верни ТОЛЬКО JSON с полями:
-- verdict: общий вердикт (2-3 предложения)
-- sections: массив из 5 объектов, каждый с полями:
-    name: название раздела (например, "Оформление и структура", "Опыт работы и достижения", "Навыки и ключевые слова", "Образование и сертификаты", "Общее впечатление / ATS-совместимость")
-    score: число от 1 до 10
-    comment: развёрнутый комментарий (что хорошо, что плохо)
-- overall_score: средний балл (округли до десятых)
-- top_3_strengths: список из 3 главных сильных сторон
-- top_3_weaknesses: список из 3 главных слабых мест
-- action_plan: список конкретных шагов по улучшению (5-7 пунктов)
-- keywords_to_add: список ключевых слов, которые стоит добавить
+- verdict: общий вердикт
+- sections: массив из 5 объектов с полями:
+    name: название раздела
+    score: число 1-10
+    comment: развёрнутый комментарий
+- overall_score: средний балл
+- top_3_strengths: список
+- top_3_weaknesses: список
+- action_plan: список шагов (5-7)
+- keywords_to_add: список ключевых слов
 """
     raw = ask_ai(prompt, max_tokens=3000)
     try:
         if "{" in raw:
             start = raw.find('{')
             end = raw.rfind('}') + 1
-            data = json.loads(raw[start:end])
-            return data
+            return json.loads(raw[start:end])
     except:
         pass
     return {"verdict": raw, "sections": [], "overall_score": 0, "top_3_strengths": [], "top_3_weaknesses": [], "action_plan": [], "keywords_to_add": []}
@@ -197,7 +193,7 @@ def create_pdf(text):
 # ========== ВКЛАДКИ ==========
 tab1, tab2, tab3, tab4 = st.tabs(["📄 Резюме", "🏠 Платформа", "📨 Отклики", "📊 Анализ"])
 
-# --- Вкладка Резюме ---
+# --- Резюме ---
 with tab1:
     st.header("Загрузи резюме")
     uploaded_file = st.file_uploader("PDF, DOCX, TXT", type=["pdf","docx","txt"])
@@ -225,37 +221,40 @@ with tab1:
                 res = ai_rewrite_resume(st.session_state.resume_text, target_job, style)
             st.session_state.improved_resume = res["rewritten"]
             st.session_state.changes = res.get("changes_summary", [])
+
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("Было")
-                st.text(st.session_state.resume_text[:500])
+                original = st.session_state.resume_text
+                st.text(original[:1000] + ("..." if len(original) > 1000 else ""))
             with col2:
                 st.subheader("Стало")
-                st.text(st.session_state.improved_resume[:500])
+                improved = st.session_state.improved_resume
+                st.text(improved[:1000] + ("..." if len(improved) > 1000 else ""))
             st.subheader("Изменения")
             for c in st.session_state.changes:
                 st.write(f"- {c}")
-            st.download_button("📥 DOCX", create_docx(st.session_state.improved_resume), "rezumator.docx")
-            pdf_f = create_pdf(st.session_state.improved_resume)
+            st.download_button("📥 DOCX", create_docx(improved), "rezumator.docx")
+            pdf_f = create_pdf(improved)
             if pdf_f:
                 st.download_button("📥 PDF", pdf_f, "rezumator.pdf")
 
-    # ===== ПРОЖАРКА 2.0 =====
-    st.header("🔥 Прожарка 2.0")
-    if st.button("🔥 Полный разбор"):
+    # ---- Аудит резюме ----
+    st.header("🔍 Аудит резюме")
+    st.caption("Детальный AI-разбор резюме по 5 ключевым разделам.")
+    if st.button("🔍 Запустить аудит"):
         resume = st.session_state.improved_resume or st.session_state.resume_text
         if not resume:
             st.warning("Нет резюме")
         else:
-            with st.spinner("Анализируем по 5 критериям..."):
-                roast = ai_roast_resume_v2(resume)
+            with st.spinner("Эксперт анализирует..."):
+                audit = ai_audit_resume(resume)
             st.subheader("Вердикт")
-            st.write(roast.get("verdict", ""))
-            st.subheader(f"Общий балл: {roast.get('overall_score', 0)} / 10")
-            st.progress(roast.get("overall_score", 0) / 10)
-            
-            # Оценки по разделам
-            sections = roast.get("sections", [])
+            st.write(audit.get("verdict", ""))
+            st.subheader(f"Общий балл: {audit.get('overall_score', 0)} / 10")
+            st.progress(audit.get("overall_score", 0) / 10)
+
+            sections = audit.get("sections", [])
             if sections:
                 st.subheader("Оценки по разделам")
                 for sec in sections:
@@ -264,30 +263,27 @@ with tab1:
                         st.metric(sec.get("name", ""), f"{sec.get('score', 0)}/10")
                     with col2:
                         st.caption(sec.get("comment", ""))
-            
-            # Сильные стороны и слабые
+
             col1, col2 = st.columns(2)
             with col1:
-                st.subheader("💪 Топ-3 сильных сторон")
-                for s in roast.get("top_3_strengths", []):
+                st.subheader("💪 Сильные стороны")
+                for s in audit.get("top_3_strengths", []):
                     st.markdown(f"- {s}")
             with col2:
-                st.subheader("⚠️ Топ-3 слабых мест")
-                for w in roast.get("top_3_weaknesses", []):
+                st.subheader("⚠️ Слабые места")
+                for w in audit.get("top_3_weaknesses", []):
                     st.markdown(f"- {w}")
-            
-            # План действий
+
             st.subheader("📋 План улучшения")
-            for step in roast.get("action_plan", []):
+            for step in audit.get("action_plan", []):
                 st.markdown(f"- {step}")
-            
-            # Ключевые слова
+
             st.subheader("🔑 Ключевые слова для добавления")
-            kw = roast.get("keywords_to_add", [])
+            kw = audit.get("keywords_to_add", [])
             if kw:
                 st.markdown(" | ".join(kw))
 
-# --- Вкладка Платформа ---
+# --- Платформа ---
 with tab2:
     st.header("⚙️ Автоправила")
     with st.form("rule_form"):
@@ -335,7 +331,7 @@ with tab2:
                     st.session_state.rules.pop(i)
                     st.experimental_rerun()
 
-# --- Вкладка Отклики ---
+# --- Отклики ---
 with tab3:
     st.header("📨 Очередь откликов")
     if not st.session_state.applications:
@@ -361,21 +357,16 @@ with tab3:
                         app["status"] = "Пропущен"
                         st.experimental_rerun()
 
-# --- Вкладка Анализ (с куками HH) ---
+# --- Анализ ---
 with tab4:
     st.header("Анализ вакансии и письма")
-    
-    # Авторизация через куки
     with st.expander("🔐 Вход в hh.ru (опционально)"):
-        st.markdown("""
-        Если вы залогинены на hh.ru, скопируйте куку `hh_session` из браузера (F12 → Application → Cookies → hh_session).
-        Это позволит видеть персонализированные рекомендации.
-        """)
-        cookie = st.text_input("Вставьте значение куки hh_session", type="password")
+        st.markdown("Вставьте куку `hh_session` из браузера после входа на hh.ru (F12 → Application → Cookies).")
+        cookie = st.text_input("hh_session", type="password")
         if cookie:
             st.session_state.hh_cookie = cookie
-            st.success("Кука сохранена (только в этой сессии)")
-    
+            st.success("Кука сохранена")
+
     query = st.text_input("Ключевые слова вакансии")
     area_sel = st.selectbox("Регион", [("РФ",113),("Москва",1),("СПб",2)])
     if st.button("🔍 Найти"):
