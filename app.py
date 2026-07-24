@@ -1,26 +1,64 @@
 import streamlit as st
 import requests
-import time
 import json
 import os
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
-import openai
 
-# ------------------------------------------------------------
-# Настройка страницы
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-# Загрузка ключа OpenAI
-openai.api_key = os.getenv("OPENAI_API_KEY")
-if not openai.api_key:
-    st.error("❌ Не найден API-ключ OpenAI. Добавь его в Secrets на Streamlit Cloud (OPENAI_API_KEY).")
+# Настройки Hugging Face
+HF_TOKEN = os.getenv("HF_TOKEN")
+if not HF_TOKEN:
+    st.error("❌ Не найден токен Hugging Face. Добавь его в Secrets (HF_TOKEN).")
     st.stop()
 
-# ------------------------------------------------------------
-# Функции извлечения текста
+# Модель — можно заменить на любую доступную (см. комментарий ниже)
+MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
+# Альтернативные русскоязычные модели (попробуй, если эта занята):
+# "ai-forever/rugpt3medium_based_on_gpt2"
+# "google/flan-t5-large"
+# "openchat/openchat-3.5-0106"
+
+def ask_ai(prompt: str) -> str:
+    """Отправляет запрос к Hugging Face Inference API."""
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
+    # Для моделей-инструкций Mistral добавляем специальные токены
+    if "mistral" in MODEL_ID.lower():
+        formatted_prompt = f"<s>[INST] {prompt} [/INST]"
+    else:
+        formatted_prompt = prompt  # Для других моделей просто текст
+
+    payload = {
+        "inputs": formatted_prompt,
+        "parameters": {
+            "max_new_tokens": 800,
+            "temperature": 0.7,
+            "return_full_text": False
+        }
+    }
+    try:
+        r = requests.post(
+            f"https://api-inference.huggingface.co/models/{MODEL_ID}",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        r.raise_for_status()
+        result = r.json()
+        # Ответ обычно список словарей [{'generated_text': '...'}]
+        if isinstance(result, list) and len(result) > 0:
+            return result[0]["generated_text"]
+        elif isinstance(result, dict) and "generated_text" in result:
+            return result["generated_text"]
+        else:
+            return str(result)
+    except Exception as e:
+        st.error(f"Ошибка Hugging Face API: {e}")
+        return "{}"
+
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
     text = ""
@@ -32,8 +70,6 @@ def extract_text_from_docx(file_bytes):
     doc = docx.Document(BytesIO(file_bytes))
     return "\n".join([p.text for p in doc.paragraphs])
 
-# ------------------------------------------------------------
-# AI-функции
 def ai_rewrite_resume(resume_text, job_description="", style="professional"):
     prompt = f"""Ты — карьерный консультант. Улучши резюме, сохранив все фактические данные.
 Стиль: {style}. Язык: русский.
@@ -41,18 +77,22 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 Исходное резюме:
 {resume_text}
 
-Верни JSON с полями:
+Верни ТОЛЬКО JSON (без лишнего текста) с полями:
 - rewritten: полный улучшенный текст
 - changes_summary: список сделанных изменений
 """
-    client = openai.OpenAI(api_key=openai.api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.7
-    )
-    return json.loads(response.choices[0].message.content)
+    raw = ask_ai(prompt)
+    # Попытка извлечь JSON из ответа
+    try:
+        # Ищем первую фигурную скобку
+        start = raw.find('{')
+        end = raw.rfind('}') + 1
+        if start != -1 and end != 0:
+            json_str = raw[start:end]
+            return json.loads(json_str)
+    except:
+        pass
+    return {"rewritten": raw, "changes_summary": ["Ответ не в формате JSON, показан сырой текст."]}
 
 def ai_analyze_match(resume_text, job_description):
     prompt = f"""Проанализируй соответствие резюме и вакансии. Оцени по шкале 0-100.
@@ -61,23 +101,23 @@ def ai_analyze_match(resume_text, job_description):
 Вакансия:
 {job_description}
 
-Верни JSON с полями:
+Верни ТОЛЬКО JSON (без лишнего текста) с полями:
 - score: число
 - cover_letter: готовое сопроводительное письмо (макс. 500 символов)
 - missing_skills: список недостающих навыков
 - tips: советы по улучшению резюме
 """
-    client = openai.OpenAI(api_key=openai.api_key)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        response_format={"type": "json_object"},
-        temperature=0.7
-    )
-    return json.loads(response.choices[0].message.content)
+    raw = ask_ai(prompt)
+    try:
+        start = raw.find('{')
+        end = raw.rfind('}') + 1
+        if start != -1 and end != 0:
+            json_str = raw[start:end]
+            return json.loads(json_str)
+    except:
+        pass
+    return {"score": 0, "cover_letter": raw[:500], "missing_skills": [], "tips": []}
 
-# ------------------------------------------------------------
-# HH.ru API клиент
 def search_hh_vacancies(text, area=113, per_page=10):
     url = "https://api.hh.ru/vacancies"
     params = {
@@ -95,11 +135,9 @@ def search_hh_vacancies(text, area=113, per_page=10):
         st.error("Ошибка при запросе к hh.ru")
         return []
 
-# ------------------------------------------------------------
 # Интерфейс
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
-# --- Вкладка Резюме ---
 with tab1:
     st.header("Шаг 1: Загрузи резюме")
     uploaded_file = st.file_uploader("Выберите файл (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
@@ -123,7 +161,7 @@ with tab1:
         if not resume_text:
             st.warning("Сначала загрузите резюме.")
         else:
-            with st.spinner("ИИ работает..."):
+            with st.spinner("ИИ работает (может занять 10-30 секунд)..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
             st.subheader("📝 Улучшенное резюме")
             st.text_area("Новый текст", result["rewritten"], height=300)
@@ -131,7 +169,6 @@ with tab1:
             for change in result["changes_summary"]:
                 st.write(f"- {change}")
 
-# --- Вкладка Вакансии ---
 with tab2:
     st.header("Поиск вакансий на hh.ru")
     search_query = st.text_input("Ключевые слова (например: Python developer)")
@@ -163,7 +200,6 @@ with tab2:
         else:
             st.warning("Введите ключевые слова")
 
-# --- Вкладка Анализ ---
 with tab3:
     st.header("Сравнение резюме с вакансией и генерация письма")
     if "selected_vacancy" not in st.session_state:
@@ -178,7 +214,7 @@ with tab3:
             if not current_resume:
                 st.warning("Введите текст резюме.")
             else:
-                with st.spinner("Анализируем..."):
+                with st.spinner("Анализируем (может занять 10-30 секунд)..."):
                     analysis = ai_analyze_match(current_resume, vac["description"])
                 st.metric("Соответствие", f"{analysis['score']}%")
                 st.subheader("📧 Сопроводительное письмо")
