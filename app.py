@@ -3,7 +3,6 @@ import requests
 import json
 import os
 import tempfile
-import urllib.parse
 import uuid
 from io import BytesIO
 from PyPDF2 import PdfReader
@@ -15,19 +14,10 @@ import time
 
 st.set_page_config(page_title="RSS job", layout="wide")
 
-# ---------- Ключи ----------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
-
-# ---------- Подключение Supabase (опционально) ----------
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    from supabase import create_client
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ---------- Шрифт для PDF ----------
 @st.cache_resource
@@ -65,7 +55,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- Сессия пользователя (уникальный URL) ----------
+# ---------- Сессия пользователя ----------
 query_params = st.experimental_get_query_params()
 session_id = query_params.get("session", [None])[0]
 if not session_id:
@@ -73,7 +63,6 @@ if not session_id:
     st.experimental_set_query_params(session=new_id)
     st.rerun()
 
-# Данные пользователя под этим ID
 if session_id not in st.session_state:
     st.session_state[session_id] = {
         "rules": [],
@@ -83,31 +72,18 @@ if session_id not in st.session_state:
     }
 user_data = st.session_state[session_id]
 
-# ---------- Счётчик уникальных IP ----------
+# ---------- Счётчик уникальных IP (локальный) ----------
 @st.cache_resource
 def get_visitor_set():
     return set()
-
-def add_visitor(ip):
-    visitors = get_visitor_set()
-    visitors.add(ip)
-    # Если Supabase доступен, сохраняем IP в БД
-    if supabase:
-        try:
-            supabase.table("visitors").insert({"ip_address": ip, "visited_at": "now()"}).execute()
-        except Exception:
-            pass
-
-client_ip = "неизвестно"
+visitors = get_visitor_set()
 try:
-    r = requests.get("https://api.ipify.org?format=json", timeout=5)
-    client_ip = r.json()["ip"]
-except Exception:
-    pass
-add_visitor(client_ip)
-total_ips = len(get_visitor_set())  # уникальные IP за время жизни контейнера
+    client_ip = requests.get("https://api.ipify.org?format=json", timeout=5).json()["ip"]
+except:
+    client_ip = "неизвестно"
+visitors.add(client_ip)
 
-# ---------- ИИ (Groq) ----------
+# ---------- ИИ ----------
 def ask_ai(prompt, max_tokens=2500, retries=3):
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}], "temperature": 0.7, "max_tokens": max_tokens}
@@ -118,17 +94,16 @@ def ask_ai(prompt, max_tokens=2500, retries=3):
             if r.status_code == 200:
                 return r.json()["choices"][0]["message"]["content"]
             elif r.status_code == 429:
-                last_err = f"Лимит запросов (429). Попытка {attempt+1}/{retries}"
+                last_err = f"Лимит (429). Попытка {attempt+1}/{retries}"
                 time.sleep(5)
             else:
                 last_err = f"Ошибка Groq {r.status_code}: {r.text[:200]}"
                 break
         except Exception as e:
-            last_err = f"Сетевая ошибка: {e}"
+            last_err = f"Сеть: {e}"
             time.sleep(2)
     return f"[ОШИБКА] {last_err}"
 
-# ---------- Утилиты файлов ----------
 def extract_text_from_pdf(file_bytes):
     pdf = PdfReader(BytesIO(file_bytes))
     return "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -166,7 +141,6 @@ def search_hh_vacancies(text, area=113):
     r = requests.get("https://api.hh.ru/vacancies", params={"text": text, "area": area, "per_page": 10}, headers={"User-Agent": "RSSjob/1.0"})
     return r.json().get("items", []) if r.status_code == 200 else []
 
-# ---------- ИИ‑инструменты ----------
 def ai_roast(resume_text):
     prompt = f"Проведи аудит резюме по 5 критериям (1-10): оформление, опыт, навыки, образование, ATS. Дай вердикт и советы.\nРезюме: {resume_text[:3000]}"
     return ask_ai(prompt, max_tokens=2000)
@@ -191,21 +165,18 @@ def ai_radars():
 def ai_market():
     return "Рынок: средняя зарплата операционного директора — 270 000 ₽, востребованы навыки управления цепочками поставок."
 
-# ---------- Интерфейс ----------
+# ---------- Боковая панель ----------
 with st.sidebar:
     st.markdown("## 🚀 RSS job")
     st.caption(f"🆔 ...{session_id[-8:]}")
-    st.metric("👥 Уникальных IP", total_ips)
-    if not supabase:
-        st.caption("Подключите Supabase для вечного счётчика")
-
+    st.metric("👥 Уникальных IP", len(visitors))
     menu = st.radio("Меню", [
         "🏠 Платформа", "🔍 Вакансии", "📨 Отклики", "📄 Резюме",
         "🔥 Аудит", "✉️ Письмо", "✅ Чек-лист", "🔗 LinkedIn аудит",
         "🏆 Достижения", "📊 Рынок", "📡 Радары", "⚙️ Настройки"
     ], label_visibility="collapsed")
 
-# ===== Разделы =====
+# ===== Разделы (полный код) =====
 if menu == "🏠 Платформа":
     st.markdown('<p class="main-header">🏠 Платформа</p>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
@@ -213,11 +184,8 @@ if menu == "🏠 Платформа":
     col2.metric("Откликов", len(user_data["applications"]))
     col3.metric("Резюме", "Загружено" if user_data["resume_original"] else "Нет")
     st.subheader("Последние отклики")
-    if user_data["applications"]:
-        for app in user_data["applications"][-5:]:
-            st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
-    else:
-        st.info("Нет откликов")
+    for app in user_data["applications"][-5:]:
+        st.write(f"📌 {app['title']} — {app['employer']} ({app['status']})")
 
 elif menu == "🔍 Вакансии":
     st.markdown('<p class="main-header">🔍 Поиск вакансий (hh.ru)</p>', unsafe_allow_html=True)
