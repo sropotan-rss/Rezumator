@@ -9,54 +9,39 @@ import docx
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
 
-# Настройки Hugging Face
-HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    st.error("❌ Не найден токен Hugging Face. Добавь его в Secrets (HF_TOKEN).")
+# Настройки OpenRouter (бесплатно, нужен ключ)
+API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not API_KEY:
+    st.error("❌ Не найден ключ OpenRouter. Добавь его в Secrets (OPENROUTER_API_KEY).")
     st.stop()
 
-# Модель — можно заменить на любую доступную (см. комментарий ниже)
-MODEL_ID = "mistralai/Mistral-7B-Instruct-v0.2"
-# Альтернативные русскоязычные модели (попробуй, если эта занята):
-# "ai-forever/rugpt3medium_based_on_gpt2"
-# "google/flan-t5-large"
-# "openchat/openchat-3.5-0106"
+# Можно выбрать любую модель с OpenRouter (бесплатную)
+MODEL = "google/gemma-2-2b-it"  # Быстрая, понимает русский, бесплатная
+# Альтернативы:
+# "mistralai/mistral-7b-instruct" (бесплатная, но может быть занята)
+# "openchat/openchat-7b" (бесплатная)
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
-    """Отправляет запрос к Hugging Face Inference API."""
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-    # Для моделей-инструкций Mistral добавляем специальные токены
-    if "mistral" in MODEL_ID.lower():
-        formatted_prompt = f"<s>[INST] {prompt} [/INST]"
-    else:
-        formatted_prompt = prompt  # Для других моделей просто текст
-
+    """Отправляет запрос в OpenRouter (бесплатный прокси к LLM)."""
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
     payload = {
-        "inputs": formatted_prompt,
-        "parameters": {
-            "max_new_tokens": 800,
-            "temperature": 0.7,
-            "return_full_text": False
-        }
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.7,
+        "max_tokens": 800
     }
     try:
-        r = requests.post(
-            f"https://api-inference.huggingface.co/models/{MODEL_ID}",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
+        r = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=60)
         r.raise_for_status()
-        result = r.json()
-        # Ответ обычно список словарей [{'generated_text': '...'}]
-        if isinstance(result, list) and len(result) > 0:
-            return result[0]["generated_text"]
-        elif isinstance(result, dict) and "generated_text" in result:
-            return result["generated_text"]
-        else:
-            return str(result)
+        data = r.json()
+        return data["choices"][0]["message"]["content"]
     except Exception as e:
-        st.error(f"Ошибка Hugging Face API: {e}")
+        st.error(f"Ошибка OpenRouter API: {e}")
         return "{}"
 
 def extract_text_from_pdf(file_bytes):
@@ -82,9 +67,8 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
 - changes_summary: список сделанных изменений
 """
     raw = ask_ai(prompt)
-    # Попытка извлечь JSON из ответа
+    # Пытаемся извлечь JSON
     try:
-        # Ищем первую фигурную скобку
         start = raw.find('{')
         end = raw.rfind('}') + 1
         if start != -1 and end != 0:
@@ -92,6 +76,7 @@ def ai_rewrite_resume(resume_text, job_description="", style="professional"):
             return json.loads(json_str)
     except:
         pass
+    # Если JSON не получен, возвращаем сырой текст как rewritten
     return {"rewritten": raw, "changes_summary": ["Ответ не в формате JSON, показан сырой текст."]}
 
 def ai_analyze_match(resume_text, job_description):
@@ -135,7 +120,7 @@ def search_hh_vacancies(text, area=113, per_page=10):
         st.error("Ошибка при запросе к hh.ru")
         return []
 
-# Интерфейс
+# Интерфейс (без изменений)
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
 with tab1:
