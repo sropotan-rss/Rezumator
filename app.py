@@ -2,13 +2,11 @@ import streamlit as st
 import requests
 import json
 import os
+import tempfile
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
+from fpdf import FPDF
 import textwrap
 
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
@@ -22,13 +20,30 @@ if not GROQ_API_KEY:
 MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Регистрируем встроенный кириллический шрифт (не требует файлов)
-pdfmetrics.registerFont(TTFont('DejaVu', 'DejaVuSans.ttf'))  # попробуем сначала зарегистрировать, если нет – используем стандартный
-try:
-    pdfmetrics.getFont('DejaVu')
-    FONT_NAME = 'DejaVu'
-except:
-    FONT_NAME = 'Helvetica'  # fallback (без кириллицы)
+# ---------- Автоматическая загрузка шрифта для PDF ----------
+FONT_URL = "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf"
+
+@st.cache_resource
+def get_font_path():
+    """Скачивает шрифт DejaVu во временный файл и возвращает путь."""
+    response = requests.get(FONT_URL, timeout=30)
+    response.raise_for_status()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.ttf')
+    tmp.write(response.content)
+    tmp.close()
+    return tmp.name
+
+FONT_PATH = None  # будет установлен при первом использовании
+
+def ensure_font():
+    global FONT_PATH
+    if FONT_PATH is None:
+        try:
+            FONT_PATH = get_font_path()
+        except Exception:
+            return False
+    return True
+# -----------------------------------------------------------
 
 def ask_ai(prompt: str) -> str:
     headers = {
@@ -137,22 +152,18 @@ def create_docx(text):
     return buffer
 
 def create_pdf(text):
-    buffer = BytesIO()
-    p = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    y = height - 50
-    p.setFont(FONT_NAME, 12)
+    if not ensure_font():
+        return None  # не удалось загрузить шрифт
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font('DejaVu', '', FONT_PATH, uni=True)
+    pdf.set_font('DejaVu', '', 12)
     for line in text.split('\n'):
-        if y < 50:
-            p.showPage()
-            p.setFont(FONT_NAME, 12)
-            y = height - 50
-        # Переносим длинные строки
-        lines = textwrap.wrap(line, width=80)
-        for l in lines:
-            p.drawString(50, y, l)
-            y -= 15
-    p.save()
+        wrapped = textwrap.wrap(line, width=80)
+        for wline in wrapped:
+            pdf.cell(0, 8, wline, ln=True)
+    buffer = BytesIO()
+    pdf.output(buffer)
     buffer.seek(0)
     return buffer
 
@@ -216,12 +227,15 @@ with tab1:
                 )
             with col_pdf:
                 pdf_file = create_pdf(improved)
-                st.download_button(
-                    label="📥 Скачать как PDF",
-                    data=pdf_file,
-                    file_name="improved_resume.pdf",
-                    mime="application/pdf"
-                )
+                if pdf_file is None:
+                    st.error("Не удалось загрузить шрифт для PDF. Попробуйте позже.")
+                else:
+                    st.download_button(
+                        label="📥 Скачать как PDF",
+                        data=pdf_file,
+                        file_name="improved_resume.pdf",
+                        mime="application/pdf"
+                    )
 
 with tab2:
     st.header("Поиск вакансий на hh.ru")
