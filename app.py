@@ -5,6 +5,8 @@ import os
 from io import BytesIO
 from PyPDF2 import PdfReader
 import docx
+from fpdf import FPDF
+import textwrap
 
 st.set_page_config(page_title="JobTurbo AI", layout="wide")
 st.title("🚀 Умный помощник для поиска работы")
@@ -14,7 +16,7 @@ if not GROQ_API_KEY:
     st.error("❌ Добавь GROQ_API_KEY в Secrets")
     st.stop()
 
-MODEL = "llama-3.1-8b-instant"   # бесплатная, активная, отлично понимает русский
+MODEL = "llama-3.1-8b-instant"
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 def ask_ai(prompt: str) -> str:
@@ -29,7 +31,7 @@ def ask_ai(prompt: str) -> str:
         "max_tokens": 2500
     }
     try:
-        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=30)
+        r = requests.post(GROQ_URL, headers=headers, json=payload, timeout=60)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
         else:
@@ -113,7 +115,35 @@ def search_hh_vacancies(text, area=113, per_page=10):
         st.error("Ошибка при запросе к hh.ru")
         return []
 
-# Интерфейс (без изменений)
+def create_docx(text):
+    """Создаёт документ Word из текста."""
+    doc = docx.Document()
+    doc.add_heading('Улучшенное резюме', 0)
+    for line in text.split('\n'):
+        doc.add_paragraph(line)
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+def create_pdf(text):
+    """Создаёт PDF из текста."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.add_font('DejaVu', '', 'DejaVuSans.ttf', uni=True)  # поддерживает кириллицу
+    pdf.set_font('DejaVu', '', 12)
+    # Разбиваем текст на строки и добавляем
+    for line in text.split('\n'):
+        # Перенос длинных строк
+        wrapped = textwrap.wrap(line, width=80)
+        for wline in wrapped:
+            pdf.cell(0, 8, wline, ln=True)
+    buffer = BytesIO()
+    pdf.output(buffer)
+    buffer.seek(0)
+    return buffer
+
+# Интерфейс
 tab1, tab2, tab3 = st.tabs(["📄 Резюме", "🔍 Вакансии", "📊 Анализ и письма"])
 
 with tab1:
@@ -129,7 +159,13 @@ with tab1:
         else:
             resume_text = file_bytes.decode("utf-8")
         st.success("Резюме загружено!")
-        st.text_area("Содержимое резюме", resume_text, height=250)
+        # Сохраняем оригинал в сессию
+        st.session_state["original_resume"] = resume_text
+
+    # Показываем оригинал, если он есть
+    if "original_resume" in st.session_state and st.session_state["original_resume"]:
+        with st.expander("📋 Исходное резюме"):
+            st.text_area("Оригинал", st.session_state["original_resume"], height=200, disabled=True)
 
     st.header("Шаг 2: Улучши резюме с ИИ")
     style = st.selectbox("Стиль", ["professional", "creative", "minimal"], index=0)
@@ -141,11 +177,44 @@ with tab1:
         else:
             with st.spinner("ИИ работает..."):
                 result = ai_rewrite_resume(resume_text, target_job_desc, style)
-            st.subheader("📝 Улучшенное резюме")
-            st.text_area("Новый текст", result["rewritten"], height=300)
+            # Сохраняем улучшенный текст
+            improved = result["rewritten"]
+            st.session_state["improved_resume"] = improved
+            st.session_state["changes"] = result.get("changes_summary", [])
+
+            # Показываем сравнение
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("📋 Было")
+                st.text_area("Исходный текст", resume_text, height=300, disabled=True)
+            with col2:
+                st.subheader("📝 Стало")
+                st.text_area("Улучшенный текст", improved, height=300)
+            
             st.subheader("✅ Что изменилось")
-            for change in result["changes_summary"]:
+            for change in st.session_state["changes"]:
                 st.write(f"- {change}")
+            
+            # Кнопки скачивания
+            if improved:
+                st.subheader("💾 Скачать результат")
+                col_docx, col_pdf = st.columns(2)
+                with col_docx:
+                    docx_file = create_docx(improved)
+                    st.download_button(
+                        label="📥 Скачать как DOCX",
+                        data=docx_file,
+                        file_name="improved_resume.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    )
+                with col_pdf:
+                    pdf_file = create_pdf(improved)
+                    st.download_button(
+                        label="📥 Скачать как PDF",
+                        data=pdf_file,
+                        file_name="improved_resume.pdf",
+                        mime="application/pdf"
+                    )
 
 with tab2:
     st.header("Поиск вакансий на hh.ru")
@@ -186,7 +255,9 @@ with tab3:
         vac = st.session_state["selected_vacancy"]
         st.subheader(f"Вакансия: {vac['title']}")
         st.text_area("Описание", vac["description"][:1000], height=150)
-        current_resume = st.text_area("Текущее резюме", st.session_state.get("resume_text", ""), height=200)
+        # Используем сохранённое улучшенное или исходное резюме
+        resume_for_analysis = st.session_state.get("improved_resume", st.session_state.get("original_resume", ""))
+        current_resume = st.text_area("Текущее резюме", resume_for_analysis, height=200)
         if st.button("📈 Анализировать"):
             if not current_resume:
                 st.warning("Введите текст резюме.")
